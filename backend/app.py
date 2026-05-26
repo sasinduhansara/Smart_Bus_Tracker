@@ -1,91 +1,66 @@
-from flask import Flask, jsonify
-from flask_socketio import SocketIO, emit
-from pymongo import MongoClient
-from dotenv import load_dotenv
-from datetime import datetime
-import os
+"""
+   GamanaLK - Smart Bus Tracker Backend
+   Python + Flask + MongoDB
+"""
 
-# .env file load කරන්න
+import os
+from dotenv import load_dotenv
 load_dotenv()
 
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'smartbustracker_secret'
+from flask import Flask, jsonify
+from flask_socketio import SocketIO
+from flask_cors import CORS
+from flask_pymongo import PyMongo
 
-# SocketIO setup
+app = Flask(__name__)
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "gamanalk_secret")
+CORS(app, supports_credentials=True, origins=["http://localhost:8081", "http://localhost:8082", "http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://192.168.8.102:8081"])
+
+# MongoDB setup - use MONGO_URI directly from .env
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/bus_tracker")
+app.config["MONGO_URI"] = MONGO_URI
+print(f"📦 Connecting to MongoDB...")
+mongo = PyMongo(app)
+app.mongo = mongo
+
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# MongoDB connect
-client = MongoClient(os.getenv('MONGO_URI', 'mongodb://localhost:27017'))
-db = client['bus_tracker']
+from routes.index import index_bp
+from routes.driver_routes import driver_bp
+from routes.passenger_routes import passenger_bp
+from routes.admin_routes import admin_bp
 
-# Active buses memory එකේ store කරනවා
-active_buses = {}
+app.register_blueprint(index_bp)
+app.register_blueprint(driver_bp)
+app.register_blueprint(passenger_bp)
+app.register_blueprint(admin_bp)
 
-# ─── REST API Routes ───────────────────────────────────
+# Seed default admin on startup
+with app.app_context():
+    from models.admin import AdminModel
+    admin_model = AdminModel(mongo)
+    admin_model.seed_default_admin()
 
-@app.route('/')
-def index():
-    return jsonify({'message': 'Smart Bus Tracker API Running! 🚌'})
+from services.socket_service import register_socket_events, active_buses
 
-@app.route('/api/active-buses')
+register_socket_events(socketio)
+
+
+@app.route("/api/active-buses")
 def get_active_buses():
     return jsonify(list(active_buses.values()))
 
-@app.route('/api/routes')
-def get_routes():
-    routes = list(db.routes.find({}, {'_id': 0}))
-    return jsonify(routes)
 
-# ─── Socket.IO Events ──────────────────────────────────
+@app.route("/api/health")
+def health_check():
+    return jsonify({
+        "status": "ok",
+        "message": "GamanaLK API is running",
+        "timestamp": __import__("datetime").datetime.now().isoformat()
+    })
 
-# Driver GPS data receive කරනවා
-@socketio.on('driver_location')
-def handle_driver_location(data):
-    bus_id = data['busNumber']
-    
-    # ETA calculate කරනවා
-    data['eta'] = calculate_eta(data)
-    data['timestamp'] = datetime.now().isoformat()
-    
-    # Memory update
-    active_buses[bus_id] = data
-    
-    # DB save
-    db.gps_logs.insert_one({**data})
-    
-    # සියලුම passengers වලට broadcast
-    emit('bus_location_update', data, broadcast=True)
-    print(f"🚌 Bus {bus_id} → Lat: {data['latitude']}, Lng: {data['longitude']}, ETA: {data['eta']} min")
 
-# Trip end
-@socketio.on('trip_ended')
-def handle_trip_ended(data):
-    bus_id = data['busNumber']
-    active_buses.pop(bus_id, None)
-    emit('bus_removed', {'busNumber': bus_id}, broadcast=True)
-    print(f"🔴 Bus {bus_id} trip ended")
+if __name__ == "__main__":
+    print("🚀 GamanaLK Server Starting...")
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
 
-# Client connect/disconnect
-@socketio.on('connect')
-def handle_connect():
-    print(f'✅ Client connected')
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    print(f'❌ Client disconnected')
-
-# ─── ETA Calculation ───────────────────────────────────
-
-def calculate_eta(data):
-    speed = data.get('speed', 10) or 10  # m/s
-    distance = 2000  # meters (placeholder)
-    if speed > 0:
-        eta_seconds = distance / speed
-        return round(eta_seconds / 60)
-    return 15
-
-# ─── Run Server ────────────────────────────────────────
-
-if __name__ == '__main__':
-    print("🚀 Smart Bus Tracker Server Starting...")
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
