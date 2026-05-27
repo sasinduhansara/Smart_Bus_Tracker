@@ -40,6 +40,9 @@ export const adminAPI = {
   login: (email: string, password: string) =>
     api.post("/admin/login", { email, password }),
 
+  // ─── Dashboard Stats ────────────────────────────────────────
+  getDashboardStats: () => api.get("/admin/dashboard/stats"),
+
   getDrivers: (params?: {
     status?: string;
     search?: string;
@@ -86,6 +89,24 @@ export const adminAPI = {
 
   getRoutes: () => api.get("/admin/routes"),
 
+  // ─── Bus Fleet (from drivers) ───────────────────────────────
+  getBusFleet: () => api.get("/admin/bus-fleet"),
+
+  // ─── Update Bus Fleet Entry ─────────────────────────────────
+  updateBusFleet: (
+    id: string,
+    data: {
+      busNumber?: string;
+      routeNumber?: string;
+      phone?: string;
+      licenseNumber?: string;
+      fullName?: string;
+    },
+  ) => api.put(`/admin/bus-fleet/${id}`, data),
+
+  // ─── Delete Bus Fleet Entry ─────────────────────────────────
+  deleteBusFleet: (id: string) => api.delete(`/admin/bus-fleet/${id}`),
+
   // ═══════════════════════════════════════════════════════════════
   //  BUS PRE-REGISTRATION - Admin registers bus+driver data
   // ═══════════════════════════════════════════════════════════════
@@ -110,6 +131,22 @@ export const adminAPI = {
     api.delete(`/admin/bus-registrations/${id}`),
 
   getBusRegistrationStats: () => api.get("/admin/bus-registrations/stats"),
+
+  // ─── Alerts & Notifications ─────────────────────────────────
+  getAlerts: (params?: { status?: string; search?: string }) =>
+    api.get("/admin/alerts", { params }),
+
+  createAlert: (data: {
+    title: string;
+    message: string;
+    severity: string;
+    busNumber?: string;
+    routeNumber?: string;
+  }) => api.post("/admin/alerts/create", data),
+
+  resolveAlert: (id: string) => api.put(`/admin/alerts/${id}/resolve`),
+
+  deleteAlert: (id: string) => api.delete(`/admin/alerts/${id}`),
 };
 
 export default api;

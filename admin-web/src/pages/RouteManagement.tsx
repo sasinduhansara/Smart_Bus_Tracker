@@ -1,5 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import AdminLayout from "../components/AdminLayout";
+import { adminAPI } from "../services/api";
+
+interface RouteStats {
+  totalRoutes: number;
+  totalBuses: number;
+  averageStops: number;
+  coverage: number;
+}
+
+interface RouteDriver {
+  name: string;
+  bus: string;
+  status: string;
+  employee_id: string;
+}
 
 interface Route {
   number: string;
@@ -8,43 +23,45 @@ interface Route {
   start: string;
   end: string;
   stops: number;
+  totalBuses: number;
   activeBuses: number;
+  drivers: RouteDriver[];
 }
 
-const routesData: Route[] = [
-  {
-    number: "138",
-    name: "Kottawa - Pettah",
-    type: "Expressway & Main Road",
-    start: "Kottawa Terminal",
-    end: "Pettah Central",
-    stops: 42,
-    activeBuses: 18,
-  },
-  {
-    number: "177",
-    name: "Kaduwela - Kollupitiya",
-    type: "Semi-Luxury Service",
-    start: "Kaduwela Depot",
-    end: "Kollupitiya Junction",
-    stops: 28,
-    activeBuses: 12,
-  },
-  {
-    number: "01",
-    name: "Colombo - Kandy",
-    type: "Intercity AC",
-    start: "Bastian Mawatha",
-    end: "Kandy Goods Shed",
-    stops: 15,
-    activeBuses: 32,
-  },
-];
-
 export default function RouteManagement() {
+  const [routes, setRoutes] = useState<Route[]>([]);
+  const [stats, setStats] = useState<RouteStats>({
+    totalRoutes: 0,
+    totalBuses: 0,
+    averageStops: 0,
+    coverage: 0,
+  });
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
 
-  const filteredRoutes = routesData.filter((route) => {
+  useEffect(() => {
+    fetchRoutes();
+  }, []);
+
+  const fetchRoutes = async () => {
+    try {
+      const res = await adminAPI.getRoutes();
+      const data = res.data.data;
+      setRoutes(data.routes || []);
+      setStats(data.stats || {
+        totalRoutes: 0,
+        totalBuses: 0,
+        averageStops: 0,
+        coverage: 0,
+      });
+    } catch (err) {
+      console.error("Error fetching routes:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const filteredRoutes = routes.filter((route) => {
     const query = searchTerm.toLowerCase().trim();
     return (
       !query ||
@@ -55,6 +72,13 @@ export default function RouteManagement() {
       route.end.toLowerCase().includes(query)
     );
   });
+
+  const counterCards = [
+    { label: "TOTAL ROUTES", value: String(stats.totalRoutes), color: "#1E3A8A" },
+    { label: "ASSIGNED BUSES", value: String(stats.totalBuses), color: "#B45309" },
+    { label: "AVERAGE STOPS", value: String(stats.averageStops), color: "#065F46" },
+    { label: "COVERAGE", value: `${stats.coverage}%`, color: "#1D4ED8" },
+  ];
 
   return (
     <AdminLayout
@@ -94,26 +118,9 @@ export default function RouteManagement() {
               Route Management
             </h2>
             <p style={{ fontSize: "13px", color: "#64748B", margin: 0 }}>
-              Configure and monitor all public transport routes.
+              {loading ? "Loading..." : `${stats.totalRoutes} route${stats.totalRoutes !== 1 ? "s" : ""} configured`}
             </p>
           </div>
-          <button
-            style={{
-              backgroundColor: "#00468C",
-              color: "white",
-              border: "none",
-              padding: "12px 20px",
-              borderRadius: "8px",
-              fontWeight: "700",
-              cursor: "pointer",
-              fontSize: "13px",
-              display: "flex",
-              alignItems: "center",
-              gap: "6px",
-            }}
-          >
-            <span>+</span> Add New Route
-          </button>
         </div>
 
         {/* ─── Counter Cards ─── */}
@@ -125,12 +132,7 @@ export default function RouteManagement() {
             width: "100%",
           }}
         >
-          {[
-            { label: "TOTAL ROUTES", value: "24", color: "#1E3A8A" },
-            { label: "ACTIVE BUSES", value: "156", color: "#B45309" },
-            { label: "AVERAGE STOPS", value: "32", color: "#065F46" },
-            { label: "COVERAGE", value: "88%", color: "#1D4ED8" },
-          ].map((card, i) => (
+          {counterCards.map((card, i) => (
             <div
               key={i}
               style={{
@@ -160,14 +162,27 @@ export default function RouteManagement() {
                   margin: 0,
                 }}
               >
-                {card.value}
+                {loading ? "..." : card.value}
               </p>
             </div>
           ))}
         </div>
 
         {/* ─── Routes Table ─── */}
-        {filteredRoutes.length === 0 ? (
+        {loading ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "60px 20px",
+              color: "#94A3B8",
+              background: "#FFFFFF",
+              borderRadius: "14px",
+              border: "1px solid #E2E8F0",
+            }}
+          >
+            Loading routes...
+          </div>
+        ) : filteredRoutes.length === 0 ? (
           <div
             style={{
               textAlign: "center",
@@ -185,7 +200,7 @@ export default function RouteManagement() {
             <p style={{ margin: 0, fontSize: "13px" }}>
               {searchTerm
                 ? `No routes match "${searchTerm}". Try a different search.`
-                : "No routes available."}
+                : "No routes available yet. Register a bus with a route number to create one."}
             </p>
           </div>
         ) : (
@@ -209,13 +224,12 @@ export default function RouteManagement() {
                 <thead>
                   <tr>
                     {[
-                      "Map",
-                      "Route Info",
-                      "Start / End",
-                      "Stops",
-                      "Active Buses",
+                      "Route",
+                      "Type",
+                      "Buses Assigned",
+                      "Active",
                       "Actions",
-                    ].map((h, i) => (
+                    ].map((h) => (
                       <th
                         key={h}
                         style={{
@@ -227,14 +241,6 @@ export default function RouteManagement() {
                           textTransform: "uppercase",
                           borderBottom: "1px solid #E2E8F0",
                           letterSpacing: "0.5px",
-                          textAlign:
-                            i === 3 || i === 5 ? "center" : "left",
-                          width:
-                            i === 0
-                              ? "100px"
-                              : i === 5
-                                ? "80px"
-                                : undefined,
                         }}
                       >
                         {h}
@@ -245,34 +251,6 @@ export default function RouteManagement() {
                 <tbody>
                   {filteredRoutes.map((route, index) => (
                     <tr key={index}>
-                      {/* Map Thumbnail */}
-                      <td
-                        style={{
-                          padding: "24px",
-                          borderBottom: "1px solid #F1F5F9",
-                          verticalAlign: "middle",
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: "72px",
-                            height: "44px",
-                            borderRadius: "6px",
-                            backgroundColor: "#64748B",
-                            backgroundImage:
-                              "radial-gradient(#475569 1px, transparent 1px)",
-                            backgroundSize: "8px 8px",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            color: "rgba(255,255,255,0.3)",
-                            fontSize: "10px",
-                          }}
-                        >
-                          🗺️
-                        </div>
-                      </td>
-
                       {/* Route Number & Name */}
                       <td
                         style={{
@@ -295,7 +273,7 @@ export default function RouteManagement() {
                               color: "#1E293B",
                             }}
                           >
-                            {route.number} {route.name}
+                            🗺️ {route.number} {route.name}
                           </span>
                           <span
                             style={{
@@ -306,76 +284,24 @@ export default function RouteManagement() {
                           >
                             {route.type}
                           </span>
+                          <span
+                            style={{
+                              fontSize: "11px",
+                              color: "#64748B",
+                              marginTop: "4px",
+                            }}
+                          >
+                            {route.start} → {route.end}
+                          </span>
                         </div>
                       </td>
 
-                      {/* Start / End */}
+                      {/* Type */}
                       <td
                         style={{
                           padding: "24px",
                           borderBottom: "1px solid #F1F5F9",
                           verticalAlign: "middle",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            gap: "8px",
-                            fontSize: "13px",
-                            fontWeight: "500",
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "8px",
-                            }}
-                          >
-                            <span
-                              style={{
-                                width: "6px",
-                                height: "6px",
-                                borderRadius: "50%",
-                                display: "inline-block",
-                                backgroundColor: "#1D4ED8",
-                              }}
-                            />
-                            <span style={{ color: "#64748B" }}>
-                              {route.start}
-                            </span>
-                          </div>
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "8px",
-                            }}
-                          >
-                            <span
-                              style={{
-                                width: "6px",
-                                height: "6px",
-                                borderRadius: "50%",
-                                display: "inline-block",
-                                backgroundColor: "#EF4444",
-                              }}
-                            />
-                            <span style={{ color: "#1E293B" }}>
-                              {route.end}
-                            </span>
-                          </div>
-                        </div>
-                      </td>
-
-                      {/* Stops */}
-                      <td
-                        style={{
-                          padding: "24px",
-                          borderBottom: "1px solid #F1F5F9",
-                          verticalAlign: "middle",
-                          textAlign: "center",
                         }}
                       >
                         <span
@@ -388,11 +314,11 @@ export default function RouteManagement() {
                             fontWeight: "700",
                           }}
                         >
-                          {route.stops} Stops
+                          {route.type}
                         </span>
                       </td>
 
-                      {/* Active Buses */}
+                      {/* Buses Assigned */}
                       <td
                         style={{
                           padding: "24px",
@@ -405,11 +331,40 @@ export default function RouteManagement() {
                             fontSize: "20px",
                             fontWeight: "800",
                             color: "#1D4ED8",
-                            paddingLeft: "12px",
+                          }}
+                        >
+                          {route.totalBuses}
+                        </span>
+                      </td>
+
+                      {/* Active */}
+                      <td
+                        style={{
+                          padding: "24px",
+                          borderBottom: "1px solid #F1F5F9",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: "20px",
+                            fontWeight: "800",
+                            color: "#16A34A",
                           }}
                         >
                           {route.activeBuses}
                         </span>
+                        {route.drivers.length > 0 && (
+                          <div
+                            style={{
+                              fontSize: "11px",
+                              color: "#64748B",
+                              marginTop: "4px",
+                            }}
+                          >
+                            {route.drivers.map((d) => d.name).join(", ")}
+                          </div>
+                        )}
                       </td>
 
                       {/* Actions */}
@@ -439,7 +394,7 @@ export default function RouteManagement() {
               </table>
             </div>
 
-            {/* Pagination Footer */}
+            {/* Footer */}
             <div
               style={{
                 display: "flex",
@@ -452,31 +407,10 @@ export default function RouteManagement() {
                 color: "#64748B",
               }}
             >
-              <span>Showing 1 to 10 of 24 routes</span>
-              <div style={{ display: "flex", gap: "8px" }}>
-                <button
-                  style={{
-                    border: "1px solid #E2E8F0",
-                    background: "white",
-                    padding: "6px 10px",
-                    borderRadius: "6px",
-                    cursor: "pointer",
-                  }}
-                >
-                  ◀
-                </button>
-                <button
-                  style={{
-                    border: "1px solid #E2E8F0",
-                    background: "white",
-                    padding: "6px 10px",
-                    borderRadius: "6px",
-                    cursor: "pointer",
-                  }}
-                >
-                  ▶
-                </button>
-              </div>
+              <span>
+                Showing {filteredRoutes.length} of {routes.length} route
+                {routes.length !== 1 ? "s" : ""}
+              </span>
             </div>
           </div>
         )}

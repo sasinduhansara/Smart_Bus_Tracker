@@ -225,11 +225,13 @@ export const driverAPI = {
    */
   loginWithOtp: async (phone, otp) => {
     try {
+      console.log("📤 Sending login request:", { phone, otp });
       const response = await fetch(`${API_BASE_URL}/api/driver/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone, otp }),
       });
+      console.log("📥 Login response status:", response.status);
       return await handleResponse(response);
     } catch (error) {
       console.error("Login With OTP Error:", error);

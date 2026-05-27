@@ -407,17 +407,226 @@ def list_buses():
         return jsonify({"success": False, "message": str(e)}), 500
 
 
-# ─── List Routes (for dropdown) ───────────────────────────────────
+# ─── Bus Fleet (from drivers collection) ──────────────────────────
+@admin_bp.route("/bus-fleet", methods=["GET"])
+@admin_required
+def list_bus_fleet():
+    try:
+        drivers = list(get_driver_collection().find(
+            {"bus_number": {"$ne": "", "$exists": True}},
+            {"password": 0}
+        ).sort("bus_number", 1))
+
+        fleet = []
+        for d in drivers:
+            fleet.append({
+                "id": str(d["_id"]),
+                "busNumber": d.get("bus_number", ""),
+                "routeNumber": d.get("route_number", ""),
+                "driverName": d.get("fullName", ""),
+                "driverPhone": d.get("phone", ""),
+                "driverNic": d.get("nic", ""),
+                "licenseNumber": d.get("licenseNumber", ""),
+                "status": d.get("status", "approved"),
+                "employeeId": d.get("employee_id", ""),
+                "created_at": d.get("created_at").isoformat() if d.get("created_at") else None,
+                "updated_at": d.get("updated_at").isoformat() if d.get("updated_at") else None,
+            })
+
+        total = len(fleet)
+        active = sum(1 for f in fleet if f["status"] == "approved")
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "fleet": fleet,
+                "stats": {
+                    "total": total,
+                    "active": active,
+                    "inactive": total - active
+                }
+            }
+        })
+
+    except Exception as e:
+        print(f"❌ List Bus Fleet Error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ─── Update Bus Fleet (driver details) ────────────────────────────
+@admin_bp.route("/bus-fleet/<driver_id>", methods=["PUT"])
+@admin_required
+def update_bus_fleet(driver_id):
+    try:
+        data = request.json
+        driver = get_driver_collection().find_one({"_id": ObjectId(driver_id)})
+        if not driver:
+            return jsonify({"success": False, "message": "Driver not found"}), 404
+
+        update = {"updated_at": datetime.utcnow()}
+
+        # Fields that can be updated: busNumber, routeNumber, phone, licenseNumber, fullName
+        bus_number = data.get("busNumber", "").strip().upper()
+        route_number = data.get("routeNumber", "").strip().upper()
+        phone = data.get("phone", "").strip()
+        license_number = data.get("licenseNumber", "").strip().upper()
+        full_name = data.get("fullName", "").strip()
+
+        if bus_number and bus_number != driver.get("bus_number", ""):
+            # Check bus not taken by another active driver
+            existing = get_driver_collection().find_one({
+                "bus_number": bus_number,
+                "_id": {"$ne": ObjectId(driver_id)}
+            })
+            if existing:
+                return jsonify({"success": False, "message": f"Bus '{bus_number}' already assigned to driver {existing['fullName']}"}), 400
+            update["bus_number"] = bus_number
+
+        if route_number:
+            update["route_number"] = route_number
+
+        if phone:
+            update["phone"] = phone
+
+        if license_number:
+            existing_lic = get_driver_collection().find_one({
+                "licenseNumber": license_number,
+                "_id": {"$ne": ObjectId(driver_id)}
+            })
+            if existing_lic:
+                return jsonify({"success": False, "message": f"License '{license_number}' already assigned to another driver"}), 400
+            update["licenseNumber"] = license_number
+
+        if full_name:
+            update["fullName"] = full_name
+
+        get_driver_collection().update_one(
+            {"_id": ObjectId(driver_id)},
+            {"$set": update}
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"Fleet entry for '{bus_number or driver.get('bus_number', '')}' updated successfully",
+            "data": {
+                "id": driver_id,
+                "busNumber": update.get("bus_number", driver.get("bus_number", "")),
+                "routeNumber": update.get("route_number", driver.get("route_number", "")),
+                "driverName": update.get("fullName", driver.get("fullName", "")),
+                "driverPhone": update.get("phone", driver.get("phone", "")),
+                "licenseNumber": update.get("licenseNumber", driver.get("licenseNumber", "")),
+            }
+        })
+
+    except Exception as e:
+        print(f"❌ Update Bus Fleet Error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ─── Delete Bus Fleet Entry ───────────────────────────────────────
+@admin_bp.route("/bus-fleet/<driver_id>", methods=["DELETE"])
+@admin_required
+def delete_bus_fleet(driver_id):
+    try:
+        driver = get_driver_collection().find_one({"_id": ObjectId(driver_id)})
+        if not driver:
+            return jsonify({"success": False, "message": "Driver not found"}), 404
+
+        get_driver_collection().delete_one({"_id": ObjectId(driver_id)})
+
+        return jsonify({
+            "success": True,
+            "message": f"Fleet entry for {driver.get('fullName', 'driver')} has been removed"
+        })
+
+    except Exception as e:
+        print(f"❌ Delete Bus Fleet Error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ─── List Routes (derived from drivers + bus_registrations) ───────
 @admin_bp.route("/routes", methods=["GET"])
 @admin_required
 def list_routes():
     try:
-        routes = list(current_app.mongo.db.routes.find({}).sort("routeNumber", 1))
-        for r in routes:
-            r["_id"] = str(r["_id"])
-            r["id"] = r["_id"]
+        # Collect all unique route numbers from drivers
+        pipeline = [
+            {"$group": {
+                "_id": "$route_number",
+                "busCount": {"$sum": 1},
+                "activeCount": {"$sum": {"$cond": [{"$eq": ["$status", "approved"]}, 1, 0]}},
+                "drivers": {"$push": {
+                    "name": "$fullName",
+                    "bus": "$bus_number",
+                    "status": "$status",
+                    "employee_id": "$employee_id"
+                }}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        route_groups = list(get_driver_collection().aggregate(pipeline))
 
-        return jsonify({"success": True, "data": {"routes": routes}})
+        # Also get route numbers from bus_registrations
+        reg_routes = set()
+        try:
+            regs = list(current_app.mongo.db.bus_registrations.find({}, {"routeNumber": 1}))
+            for r in regs:
+                rn = r.get("routeNumber", "").strip()
+                if rn:
+                    reg_routes.add(rn)
+        except Exception:
+            pass
+
+        routes = []
+        for g in route_groups:
+            rn = g.get("_id", "")
+            if not rn:
+                continue
+            reg_routes.discard(rn)
+            routes.append({
+                "number": rn,
+                "name": f"Route {rn}",
+                "type": "Bus Route",
+                "start": "Main Terminal",
+                "end": "City Center",
+                "stops": 0,
+                "totalBuses": g.get("busCount", 0),
+                "activeBuses": g.get("activeCount", 0),
+                "drivers": g.get("drivers", [])
+            })
+
+        # Add routes from registrations not yet in drivers
+        for rn in reg_routes:
+            routes.append({
+                "number": rn,
+                "name": f"Route {rn}",
+                "type": "Registered Route",
+                "start": "Pending",
+                "end": "Pending",
+                "stops": 0,
+                "totalBuses": 0,
+                "activeBuses": 0,
+                "drivers": []
+            })
+
+        # Stats
+        total_routes = len(routes)
+        total_buses = sum(r["totalBuses"] for r in routes)
+        total_stops = sum(r["stops"] for r in routes)
+        avg_stops = round(total_stops / total_routes) if total_routes > 0 else 0
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "routes": routes,
+                "stats": {
+                    "totalRoutes": total_routes,
+                    "totalBuses": total_buses,
+                    "averageStops": avg_stops,
+                    "coverage": min(100, total_routes * 4) if total_routes > 0 else 0
+                }
+            }
+        })
 
     except Exception as e:
         print(f"❌ List Routes Error: {e}")
@@ -542,6 +751,259 @@ def get_bus_registration_stats():
         pending = get_bus_registration_collection().count_documents({"status": "pending"})
         completed = get_bus_registration_collection().count_documents({"status": "completed"})
         return jsonify({"success": True, "data": {"total": total, "pending": pending, "completed": completed}})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ─── Dashboard Stats ────────────────────────────────────────────
+@admin_bp.route("/dashboard/stats", methods=["GET"])
+@admin_required
+def get_dashboard_stats():
+    try:
+        # Driver stats
+        total_drivers = get_driver_collection().count_documents({})
+        approved_drivers = get_driver_collection().count_documents({"status": "approved"})
+        pending_drivers = get_driver_collection().count_documents({"status": "pending"})
+        rejected_drivers = get_driver_collection().count_documents({"status": "rejected"})
+
+        # Active buses (drivers with bus_number and approved)
+        active_buses = get_driver_collection().count_documents({
+            "bus_number": {"$ne": "", "$exists": True},
+            "status": "approved"
+        })
+
+        # Fleet data
+        fleet_drivers = list(get_driver_collection().find(
+            {"bus_number": {"$ne": "", "$exists": True}},
+            {"password": 0}
+        ))
+        fleet_total = len(fleet_drivers)
+
+        # Passenger count
+        total_passengers = 0
+        try:
+            total_passengers = current_app.mongo.db.passengers.count_documents({})
+        except Exception:
+            pass
+
+        # Bus registrations
+        total_registrations = 0
+        pending_registrations = 0
+        completed_registrations = 0
+        try:
+            reg_collection = current_app.mongo.db.bus_registrations
+            total_registrations = reg_collection.count_documents({})
+            pending_registrations = reg_collection.count_documents({"status": "pending"})
+            completed_registrations = reg_collection.count_documents({"status": "completed"})
+        except Exception:
+            pass
+
+        # Unique routes from drivers
+        route_numbers = set()
+        for d in fleet_drivers:
+            rn = d.get("route_number", "")
+            if rn:
+                route_numbers.add(rn)
+        total_routes = len(route_numbers)
+
+        # Recent activity (last 5 registrations)
+        recent = list(get_bus_registration_collection().find({}).sort("created_at", -1).limit(5))
+        recent_activity = []
+        for r in recent:
+            recent_activity.append({
+                "text": f"Bus {r.get('busNumber', '')} {'completed registration' if r.get('status') == 'completed' else 'pre-registered'} for route {r.get('routeNumber', '')}",
+                "time": r.get("created_at").strftime("%Y-%m-%d %H:%M") if r.get("created_at") else "",
+                "critical": False
+            })
+
+        # Recent driver updates
+        recent_drivers = list(get_driver_collection().find(
+            {}, {"password": 0}
+        ).sort("updated_at", -1).limit(5))
+        for d in recent_drivers:
+            if d.get("updated_at"):
+                action = "approved" if d.get("status") == "approved" else ("rejected" if d.get("status") == "rejected" else "registered")
+                recent_activity.append({
+                    "text": f"Driver {d.get('fullName', '')} ({d.get('employee_id', 'N/A')}) {action}",
+                    "time": d["updated_at"].strftime("%Y-%m-%d %H:%M") if hasattr(d["updated_at"], "strftime") else "",
+                    "critical": d.get("status") == "rejected"
+                })
+
+        # Sort by time descending and take latest 5
+        recent_activity.sort(key=lambda x: x["time"], reverse=True)
+        recent_activity = recent_activity[:5]
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "stats": {
+                    "activeBuses": active_buses,
+                    "totalFleet": fleet_total,
+                    "totalPassengers": total_passengers,
+                    "totalRoutes": total_routes,
+                    "totalDrivers": total_drivers,
+                    "approvedDrivers": approved_drivers,
+                    "pendingDrivers": pending_drivers,
+                    "rejectedDrivers": rejected_drivers,
+                    "pendingRegistrations": pending_registrations,
+                    "completedRegistrations": completed_registrations,
+                },
+                "recentActivity": recent_activity
+            }
+        })
+
+    except Exception as e:
+        print(f"❌ Dashboard Stats Error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ─── Alerts & Notifications ──────────────────────────────────────
+def get_alerts_collection():
+    return current_app.mongo.db.alerts
+
+
+@admin_bp.route("/alerts", methods=["GET"])
+@admin_required
+def list_alerts():
+    try:
+        status_filter = request.args.get("status", "all")  # all, unresolved, critical
+        search = request.args.get("search", "")
+
+        query = {}
+        if status_filter == "unresolved":
+            query["resolved"] = False
+        elif status_filter == "critical":
+            query["severity"] = "critical"
+            query["resolved"] = False
+
+        if search:
+            search_regex = {"$regex": search, "$options": "i"}
+            query["$or"] = [
+                {"title": search_regex},
+                {"message": search_regex},
+                {"busNumber": search_regex},
+                {"routeNumber": search_regex}
+            ]
+
+        # Get stored alerts
+        alerts = list(get_alerts_collection().find(query).sort("created_at", -1).limit(50))
+        for a in alerts:
+            a["_id"] = str(a["_id"])
+            a["id"] = a["_id"]
+            if "created_at" in a and a["created_at"]:
+                a["created_at"] = a["created_at"].isoformat()
+            if "resolved_at" in a and a["resolved_at"]:
+                a["resolved_at"] = a["resolved_at"].isoformat()
+
+        # Stats
+        total = get_alerts_collection().count_documents({})
+        unresolved = get_alerts_collection().count_documents({"resolved": False})
+        critical = get_alerts_collection().count_documents({"severity": "critical", "resolved": False})
+        resolved_today = get_alerts_collection().count_documents({
+            "resolved": True,
+            "resolved_at": {"$gte": datetime.utcnow() - timedelta(days=1)}
+        })
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "alerts": alerts,
+                "stats": {
+                    "total": total,
+                    "unresolved": unresolved,
+                    "critical": critical,
+                    "resolvedToday": resolved_today,
+                    "resolutionRate": round((resolved_today / max(total, 1)) * 100)
+                }
+            }
+        })
+
+    except Exception as e:
+        print(f"❌ List Alerts Error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@admin_bp.route("/alerts/create", methods=["POST"])
+@admin_required
+def create_alert():
+    try:
+        data = request.json
+        title = data.get("title", "").strip()
+        message = data.get("message", "").strip()
+        severity = data.get("severity", "info")  # critical, warning, info
+        bus_number = data.get("busNumber", "").strip().upper()
+        route_number = data.get("routeNumber", "").strip().upper()
+
+        if not title or not message:
+            return jsonify({"success": False, "message": "Title and message are required"}), 400
+        if severity not in ["critical", "warning", "info"]:
+            return jsonify({"success": False, "message": "Severity must be 'critical', 'warning', or 'info'"}), 400
+
+        alert_doc = {
+            "title": title,
+            "message": message,
+            "severity": severity,
+            "busNumber": bus_number,
+            "routeNumber": route_number,
+            "resolved": False,
+            "resolved_at": None,
+            "resolved_by": None,
+            "created_by": request.admin.get("email", "admin"),
+            "created_at": datetime.utcnow()
+        }
+
+        result = get_alerts_collection().insert_one(alert_doc)
+        alert_doc["_id"] = str(result.inserted_id)
+        alert_doc["id"] = alert_doc["_id"]
+
+        return jsonify({
+            "success": True,
+            "message": "Alert created successfully",
+            "data": alert_doc
+        }), 201
+
+    except Exception as e:
+        print(f"❌ Create Alert Error: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@admin_bp.route("/alerts/<alert_id>/resolve", methods=["PUT"])
+@admin_required
+def resolve_alert(alert_id):
+    try:
+        alert = get_alerts_collection().find_one({"_id": ObjectId(alert_id)})
+        if not alert:
+            return jsonify({"success": False, "message": "Alert not found"}), 404
+
+        get_alerts_collection().update_one(
+            {"_id": ObjectId(alert_id)},
+            {"$set": {
+                "resolved": True,
+                "resolved_at": datetime.utcnow(),
+                "resolved_by": request.admin.get("email", "admin")
+            }}
+        )
+
+        return jsonify({
+            "success": True,
+            "message": "Alert resolved successfully"
+        })
+
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@admin_bp.route("/alerts/<alert_id>", methods=["DELETE"])
+@admin_required
+def delete_alert(alert_id):
+    try:
+        alert = get_alerts_collection().find_one({"_id": ObjectId(alert_id)})
+        if not alert:
+            return jsonify({"success": False, "message": "Alert not found"}), 404
+
+        get_alerts_collection().delete_one({"_id": ObjectId(alert_id)})
+        return jsonify({"success": True, "message": "Alert deleted"})
+
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 

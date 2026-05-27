@@ -1,16 +1,64 @@
 import { useEffect, useState } from "react";
 import AdminLayout from "../components/AdminLayout";
+import { adminAPI } from "../services/api";
+
+interface DashboardStats {
+  activeBuses: number;
+  totalFleet: number;
+  totalPassengers: number;
+  totalRoutes: number;
+  totalDrivers: number;
+  approvedDrivers: number;
+  pendingDrivers: number;
+  rejectedDrivers: number;
+  pendingRegistrations: number;
+  completedRegistrations: number;
+}
+
+interface ActivityItem {
+  text: string;
+  time: string;
+  critical: boolean;
+}
 
 export default function Dashboard() {
   const [windowWidth, setWindowWidth] = useState(
     typeof window !== "undefined" ? window.innerWidth : 1200,
   );
+  const [stats, setStats] = useState<DashboardStats>({
+    activeBuses: 0,
+    totalFleet: 0,
+    totalPassengers: 0,
+    totalRoutes: 0,
+    totalDrivers: 0,
+    approvedDrivers: 0,
+    pendingDrivers: 0,
+    rejectedDrivers: 0,
+    pendingRegistrations: 0,
+    completedRegistrations: 0,
+  });
+  const [recentActivity, setRecentActivity] = useState<ActivityItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const handleResize = () => setWindowWidth(window.innerWidth);
     window.addEventListener("resize", handleResize);
+    fetchDashboardStats();
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  const fetchDashboardStats = async () => {
+    try {
+      const res = await adminAPI.getDashboardStats();
+      const data = res.data.data;
+      setStats(data.stats);
+      setRecentActivity(data.recentActivity || []);
+    } catch (err) {
+      console.error("Error fetching dashboard stats:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const isMobile = windowWidth <= 768;
   const isTablet = windowWidth > 768 && windowWidth <= 1024;
@@ -18,49 +66,31 @@ export default function Dashboard() {
   const summaryCards = [
     {
       title: "ACTIVE BUSES",
-      value: "124",
+      value: String(stats.activeBuses),
       icon: "🚌",
       bg: "#EFF6FF",
       color: "#1D4ED8",
     },
     {
       title: "TOTAL PASSENGERS",
-      value: "8.2k",
+      value: stats.totalPassengers > 0 ? String(stats.totalPassengers) : "0",
       icon: "👥",
       bg: "#FEF3C7",
       color: "#B45309",
     },
     {
       title: "ACTIVE ROUTES",
-      value: "45",
+      value: String(stats.totalRoutes),
       icon: "🗺️",
       bg: "#ECFDF5",
       color: "#047857",
     },
     {
-      title: "SYSTEM ALERTS",
-      value: "3",
-      icon: "⚠️",
+      title: "TOTAL DRIVERS",
+      value: String(stats.totalDrivers),
+      icon: "👤",
       bg: "#FEE2E2",
       color: "#B91C1C",
-    },
-  ];
-
-  const activityFeed = [
-    {
-      text: "Route 120 reaching stop: Bambalapitiya",
-      time: "JUST NOW",
-      critical: false,
-    },
-    {
-      text: "Emergency brake alert: Bus NB-1233",
-      time: "2 MINS AGO",
-      critical: true,
-    },
-    {
-      text: "New maintenance log for Bus NB-5501",
-      time: "10 MINS AGO",
-      critical: false,
     },
   ];
 
@@ -208,7 +238,7 @@ export default function Dashboard() {
                   borderRadius: "10px",
                 }}
               >
-                • Colombo Central
+                {stats.activeBuses} bus{stats.activeBuses !== 1 ? "es" : ""} active
               </span>
             </div>
             <div
@@ -259,7 +289,7 @@ export default function Dashboard() {
                   margin: 0,
                 }}
               >
-                ⚡ Live Activity
+                ⚡ Recent Activity
               </h3>
             </div>
             <div
@@ -271,52 +301,62 @@ export default function Dashboard() {
                 flex: 1,
               }}
             >
-              {activityFeed.map((feed, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: "10px",
-                  }}
-                >
-                  <span
+              {loading ? (
+                <p style={{ fontSize: "12px", color: "#9CA3AF" }}>Loading...</p>
+              ) : recentActivity.length === 0 ? (
+                <p style={{ fontSize: "12px", color: "#9CA3AF" }}>
+                  No recent activity
+                </p>
+              ) : (
+                recentActivity.map((feed, idx) => (
+                  <div
+                    key={idx}
                     style={{
-                      width: "7px",
-                      height: "7px",
-                      borderRadius: "50%",
-                      marginTop: "5px",
-                      backgroundColor: feed.critical ? "#EF4444" : "#3B82F6",
-                      flexShrink: 0,
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: "10px",
                     }}
-                  />
-                  <div>
-                    <p
-                      style={{
-                        fontSize: "13px",
-                        margin: 0,
-                        color: feed.critical ? "#B91C1C" : "#374151",
-                        fontWeight: feed.critical ? "700" : "500",
-                      }}
-                    >
-                      {feed.text}
-                    </p>
+                  >
                     <span
                       style={{
-                        fontSize: "11px",
-                        color: "#9CA3AF",
-                        fontWeight: "600",
+                        width: "7px",
+                        height: "7px",
+                        borderRadius: "50%",
+                        marginTop: "5px",
+                        backgroundColor: feed.critical ? "#EF4444" : "#3B82F6",
+                        flexShrink: 0,
                       }}
-                    >
-                      System Update • {feed.time}
-                    </span>
+                    />
+                    <div>
+                      <p
+                        style={{
+                          fontSize: "13px",
+                          margin: 0,
+                          color: feed.critical ? "#B91C1C" : "#374151",
+                          fontWeight: feed.critical ? "700" : "500",
+                        }}
+                      >
+                        {feed.text}
+                      </p>
+                      {feed.time && (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            color: "#9CA3AF",
+                            fontWeight: "600",
+                          }}
+                        >
+                          {feed.time}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))
+              )}
             </div>
           </div>
 
-          {/* ETA Prediction Accuracy */}
+          {/* Driver Stats */}
           <div
             style={{
               backgroundColor: "#FFFFFF",
@@ -346,7 +386,7 @@ export default function Dashboard() {
                   margin: 0,
                 }}
               >
-                📈 ETA Prediction Accuracy
+                📊 Driver Overview
               </h3>
               <span
                 style={{
@@ -357,31 +397,86 @@ export default function Dashboard() {
                   borderRadius: "4px",
                 }}
               >
-                Last 24 Hours
+                Live
               </span>
             </div>
             <div
               style={{
                 flex: 1,
-                backgroundColor: "#F9FAFB",
-                border: "1px dashed #D1D5DB",
-                borderRadius: "6px",
                 display: "flex",
-                alignItems: "center",
+                flexDirection: "column",
+                gap: "12px",
                 justifyContent: "center",
-                minHeight: "220px",
               }}
             >
-              <p
+              <div
                 style={{
-                  fontSize: "12px",
-                  color: "#9CA3AF",
-                  fontWeight: "500",
-                  margin: 0,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "12px 16px",
+                  backgroundColor: "#ECFDF5",
+                  borderRadius: "8px",
                 }}
               >
-                [ Accuracy Curve Performance Chart ]
-              </p>
+                <span style={{ fontSize: "14px", fontWeight: "600", color: "#065F46" }}>
+                  ✅ Approved
+                </span>
+                <span style={{ fontSize: "20px", fontWeight: "800", color: "#065F46" }}>
+                  {stats.approvedDrivers}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "12px 16px",
+                  backgroundColor: "#FEF3C7",
+                  borderRadius: "8px",
+                }}
+              >
+                <span style={{ fontSize: "14px", fontWeight: "600", color: "#92400E" }}>
+                  ⏳ Pending
+                </span>
+                <span style={{ fontSize: "20px", fontWeight: "800", color: "#92400E" }}>
+                  {stats.pendingDrivers}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "12px 16px",
+                  backgroundColor: "#FEE2E2",
+                  borderRadius: "8px",
+                }}
+              >
+                <span style={{ fontSize: "14px", fontWeight: "600", color: "#991B1B" }}>
+                  ❌ Rejected
+                </span>
+                <span style={{ fontSize: "20px", fontWeight: "800", color: "#991B1B" }}>
+                  {stats.rejectedDrivers}
+                </span>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "12px 16px",
+                  backgroundColor: "#F3F4F6",
+                  borderRadius: "8px",
+                }}
+              >
+                <span style={{ fontSize: "14px", fontWeight: "600", color: "#374151" }}>
+                  📝 Pending Registrations
+                </span>
+                <span style={{ fontSize: "20px", fontWeight: "800", color: "#374151" }}>
+                  {stats.pendingRegistrations}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -420,6 +515,7 @@ export default function Dashboard() {
               }}
             >
               <button
+                onClick={() => window.location.href = "/driver-management"}
                 style={{
                   width: "100%",
                   padding: "12px 16px",
@@ -442,6 +538,7 @@ export default function Dashboard() {
                 + Add New Driver
               </button>
               <button
+                onClick={() => window.location.href = "/route-management"}
                 style={{
                   width: "100%",
                   padding: "12px 16px",
@@ -464,6 +561,7 @@ export default function Dashboard() {
                 + Add New Bus Route
               </button>
               <button
+                onClick={() => window.location.href = "/bus-management"}
                 style={{
                   width: "100%",
                   padding: "12px 16px",
@@ -483,7 +581,7 @@ export default function Dashboard() {
                   e.currentTarget.style.backgroundColor = "white";
                 }}
               >
-                📄 View Fleet Reports
+                📄 View Fleet
               </button>
             </div>
           </div>

@@ -1,104 +1,126 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import AdminLayout from "../components/AdminLayout";
+import { adminAPI } from "../services/api";
 
 interface Driver {
   id: string;
-  name: string;
-  status: "Active" | "Inactive";
-  bus: string;
-  route: string;
+  _id?: string;
+  fullName: string;
+  status: string;
+  bus_number: string;
+  route_number: string;
   phone: string;
+  employee_id: string;
+  licenseNumber: string;
+  nic: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
-const driversData: Driver[] = [
-  {
-    id: "EMP-10294",
-    name: "Sunimal Silva",
-    status: "Active",
-    bus: "NB-4921",
-    route: "138",
-    phone: "+94 77 123 4567",
-  },
-  {
-    id: "EMP-10312",
-    name: "Arjuna Ranatunga",
-    status: "Active",
-    bus: "LY-8802",
-    route: "120",
-    phone: "+94 71 882 3344",
-  },
-  {
-    id: "EMP-09882",
-    name: "Kasun Perera",
-    status: "Inactive",
-    bus: "UNASSIGNED",
-    route: "",
-    phone: "+94 75 443 1122",
-  },
-  {
-    id: "EMP-10443",
-    name: "Nimal Siripala",
-    status: "Active",
-    bus: "WP-0021",
-    route: "100",
-    phone: "+94 72 334 5566",
-  },
-  {
-    id: "EMP-10556",
-    name: "Chathura Gamage",
-    status: "Active",
-    bus: "SP-3342",
-    route: "02",
-    phone: "+94 77 990 8877",
-  },
-  {
-    id: "EMP-10221",
-    name: "Samantha Silva",
-    status: "Active",
-    bus: "NB-1229",
-    route: "177",
-    phone: "+94 71 555 6677",
-  },
-  {
-    id: "EMP-10667",
-    name: "Harsha de Silva",
-    status: "Active",
-    bus: "CP-4492",
-    route: "15",
-    phone: "+94 77 222 3333",
-  },
-];
+interface DriverStats {
+  total: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+}
 
 const FILTER_OPTIONS = [
-  { label: "All Drivers", count: 24, key: "All" },
-  { label: "Active", count: 21, key: "Active" },
-  { label: "Inactive", count: 3, key: "Inactive" },
+  { label: "All Drivers", key: "all" },
+  { label: "Approved", key: "approved" },
+  { label: "Pending", key: "pending" },
+  { label: "Rejected", key: "rejected" },
 ] as const;
 
 type FilterKey = (typeof FILTER_OPTIONS)[number]["key"];
 
 export default function DriverManagement() {
-  const [activeFilter, setActiveFilter] = useState<FilterKey>("All");
+  const navigate = useNavigate();
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [stats, setStats] = useState<DriverStats>({
+    total: 0,
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [searchTerm, setSearchTerm] = useState("");
 
-  const filteredDrivers = driversData.filter((driver) => {
+  useEffect(() => {
+    fetchDrivers();
+    fetchStats();
+  }, []);
+
+  const fetchDrivers = async () => {
+    try {
+      const res = await adminAPI.getDrivers({ limit: 100 });
+      setDrivers(res.data.data.drivers || []);
+    } catch (err) {
+      console.error("Error fetching drivers:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchStats = async () => {
+    try {
+      const res = await adminAPI.getStats();
+      setStats(res.data.data);
+    } catch (err) {
+      console.error("Error fetching driver stats:", err);
+    }
+  };
+
+  const filteredDrivers = drivers.filter((driver) => {
     const matchesFilter =
-      activeFilter === "All" || driver.status === activeFilter;
+      activeFilter === "all" || driver.status === activeFilter;
     const query = searchTerm.toLowerCase().trim();
     const matchesSearch =
       !query ||
-      driver.name.toLowerCase().includes(query) ||
-      driver.id.toLowerCase().includes(query) ||
-      driver.bus.toLowerCase().includes(query) ||
-      driver.phone.includes(query);
+      driver.fullName.toLowerCase().includes(query) ||
+      driver.employee_id.toLowerCase().includes(query) ||
+      driver.bus_number.toLowerCase().includes(query) ||
+      driver.phone.includes(query) ||
+      driver.nic.includes(query);
     return matchesFilter && matchesSearch;
   });
+
+  const getFilterCount = (key: FilterKey): number => {
+    if (key === "all") return stats.total;
+    if (key === "approved") return stats.approved;
+    if (key === "pending") return stats.pending;
+    if (key === "rejected") return stats.rejected;
+    return 0;
+  };
+
+  const getStatusStyle = (status: string) => {
+    switch (status) {
+      case "approved":
+        return { label: "Active", bg: "#E2FBE8", color: "#16A34A" };
+      case "pending":
+        return { label: "Pending", bg: "#FEF3C7", color: "#D97706" };
+      case "rejected":
+        return { label: "Rejected", bg: "#FEE2E2", color: "#EF4444" };
+      default:
+        return { label: status, bg: "#F1F5F9", color: "#64748B" };
+    }
+  };
+
+  const getInitials = (name: string) => {
+    return name
+      .split(" ")
+      .map((w) => w[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2);
+  };
 
   return (
     <AdminLayout
       title="Driver Management"
       showSearch
-      searchPlaceholder="Search driver by name or ID..."
+      searchPlaceholder="Search driver by name, ID, bus, phone..."
       searchValue={searchTerm}
       onSearchChange={setSearchTerm}
     >
@@ -134,12 +156,13 @@ export default function DriverManagement() {
               Driver Management
             </h2>
             <p style={{ fontSize: "13px", color: "#64748B", margin: 0 }}>
-              Manage and monitor{" "}
-              {driversData.filter((d) => d.status === "Active").length} active
-              personnel across regional routes.
+              {loading
+                ? "Loading..."
+                : `Manage and monitor ${stats.approved} active personnel across regional routes.`}
             </p>
           </div>
           <button
+            onClick={() => navigate("/bus-registration")}
             style={{
               backgroundColor: "#0056B3",
               color: "white",
@@ -172,10 +195,10 @@ export default function DriverManagement() {
             gap: "12px",
           }}
         >
-          {/* Filter buttons */}
           <div style={{ display: "flex", gap: "10px" }}>
             {FILTER_OPTIONS.map((filter) => {
               const isSelected = activeFilter === filter.key;
+              const count = getFilterCount(filter.key);
               return (
                 <button
                   key={filter.key}
@@ -206,7 +229,7 @@ export default function DriverManagement() {
                       borderRadius: "10px",
                     }}
                   >
-                    {filter.count}
+                    {count}
                   </span>
                 </button>
               );
@@ -215,76 +238,57 @@ export default function DriverManagement() {
         </div>
 
         {/* ─── Pending applications tag ─── */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            fontSize: "13px",
-            fontWeight: "600",
-            color: "#475569",
-          }}
-        >
-          <div style={{ display: "flex" }}>
-            <div
-              style={{
-                width: "24px",
-                height: "24px",
-                borderRadius: "50%",
-                backgroundColor: "#E2E8F0",
-                border: "2px solid #F8FAFC",
-                zIndex: 3,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: "12px",
-              }}
-            >
-              👦
+        {stats.pending > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              fontSize: "13px",
+              fontWeight: "600",
+              color: "#475569",
+            }}
+          >
+            <div style={{ display: "flex" }}>
+              <div
+                style={{
+                  width: "24px",
+                  height: "24px",
+                  borderRadius: "50%",
+                  backgroundColor: "#FEF3C7",
+                  border: "2px solid #F8FAFC",
+                  zIndex: 3,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "12px",
+                }}
+              >
+                ⏳
+              </div>
             </div>
-            <div
-              style={{
-                width: "24px",
-                height: "24px",
-                borderRadius: "50%",
-                backgroundColor: "#CBD5E1",
-                border: "2px solid #F8FAFC",
-                marginLeft: "-8px",
-                zIndex: 2,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: "12px",
-              }}
-            >
-              👨
-            </div>
-            <div
-              style={{
-                width: "24px",
-                height: "24px",
-                borderRadius: "50%",
-                backgroundColor: "#94A3B8",
-                border: "2px solid #F8FAFC",
-                marginLeft: "-8px",
-                zIndex: 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: "12px",
-              }}
-            >
-              🧔
-            </div>
+            <span>
+              <strong style={{ color: "#D97706" }}>{stats.pending} New</strong>{" "}
+              application{stats.pending !== 1 ? "s" : ""} pending
+            </span>
           </div>
-          <span>
-            <strong style={{ color: "#0056B3" }}>3 New</strong> applications
-            pending
-          </span>
-        </div>
+        )}
 
         {/* ─── Cards Grid ─── */}
-        {filteredDrivers.length === 0 ? (
+        {loading ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "60px 20px",
+              color: "#94A3B8",
+              background: "#FFFFFF",
+              borderRadius: "14px",
+              border: "1px solid #E2E8F0",
+            }}
+          >
+            Loading driver data...
+          </div>
+        ) : filteredDrivers.length === 0 ? (
           <div
             style={{
               textAlign: "center",
@@ -314,200 +318,206 @@ export default function DriverManagement() {
               width: "100%",
             }}
           >
-            {filteredDrivers.map((driver) => (
-              <div
-                key={driver.id}
-                style={{
-                  background: "#FFFFFF",
-                  border: "1px solid #E2E8F0",
-                  borderRadius: "14px",
-                  padding: "24px 20px 16px 20px",
-                  display: "flex",
-                  flexDirection: "column",
-                  position: "relative",
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.01)",
-                }}
-              >
-                {/* Status Tag */}
-                <span
-                  style={{
-                    position: "absolute",
-                    top: "20px",
-                    right: "20px",
-                    fontSize: "10px",
-                    fontWeight: 700,
-                    padding: "3px 8px",
-                    borderRadius: "6px",
-                    textTransform: "uppercase",
-                    backgroundColor:
-                      driver.status === "Active" ? "#E2FBE8" : "#FEE2E2",
-                    color: driver.status === "Active" ? "#16A34A" : "#EF4444",
-                  }}
-                >
-                  {driver.status}
-                </span>
-
-                {/* Avatar */}
+            {filteredDrivers.map((driver) => {
+              const statusStyle = getStatusStyle(driver.status);
+              const hasBus = driver.bus_number && driver.bus_number !== "";
+              return (
                 <div
+                  key={driver.id}
                   style={{
+                    background: "#FFFFFF",
+                    border: "1px solid #E2E8F0",
+                    borderRadius: "14px",
+                    padding: "24px 20px 16px 20px",
                     display: "flex",
-                    justifyContent: "center",
-                    marginBottom: "14px",
+                    flexDirection: "column",
                     position: "relative",
-                    width: "64px",
-                    height: "64px",
-                    margin: "0 auto 12px auto",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.01)",
                   }}
                 >
-                  <div
-                    style={{
-                      width: "64px",
-                      height: "64px",
-                      borderRadius: "50%",
-                      backgroundColor: "#E2E8F0",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: "28px",
-                    }}
-                  >
-                    👨‍✈️
-                  </div>
+                  {/* Status Tag */}
                   <span
                     style={{
                       position: "absolute",
-                      bottom: "2px",
-                      right: "2px",
-                      width: "12px",
-                      height: "12px",
-                      backgroundColor:
-                        driver.status === "Active" ? "#16A34A" : "#CBD5E1",
-                      border: "2px solid white",
-                      borderRadius: "50%",
-                    }}
-                  />
-                </div>
-
-                {/* Driver Details */}
-                <div style={{ textAlign: "center", marginBottom: "16px" }}>
-                  <h3
-                    style={{
-                      margin: "0 0 2px 0",
-                      fontSize: "15px",
+                      top: "20px",
+                      right: "20px",
+                      fontSize: "10px",
                       fontWeight: 700,
-                      color: "#1E293B",
+                      padding: "3px 8px",
+                      borderRadius: "6px",
+                      textTransform: "uppercase",
+                      backgroundColor: statusStyle.bg,
+                      color: statusStyle.color,
                     }}
                   >
-                    {driver.name}
-                  </h3>
-                  <p
-                    style={{
-                      margin: 0,
-                      fontSize: "12px",
-                      color: "#94A3B8",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {driver.id}
-                  </p>
-                </div>
+                    {statusStyle.label}
+                  </span>
 
-                {/* Bus / Route Badge */}
-                <div style={{ marginBottom: "12px" }}>
-                  {driver.bus === "UNASSIGNED" ? (
+                  {/* Avatar */}
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "center",
+                      marginBottom: "14px",
+                      position: "relative",
+                      width: "64px",
+                      height: "64px",
+                      margin: "0 auto 12px auto",
+                    }}
+                  >
                     <div
                       style={{
-                        backgroundColor: "#F1F5F9",
-                        color: "#94A3B8",
-                        padding: "8px 12px",
-                        borderRadius: "8px",
-                        fontSize: "11px",
-                        fontWeight: 700,
-                        textAlign: "center",
-                        textTransform: "uppercase",
-                        letterSpacing: "0.5px",
-                      }}
-                    >
-                      🚫 Unassigned
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        backgroundColor: "#FEF3C7",
-                        color: "#B45309",
-                        padding: "8px 12px",
-                        borderRadius: "8px",
-                        fontSize: "12px",
-                        fontWeight: 700,
+                        width: "64px",
+                        height: "64px",
+                        borderRadius: "50%",
+                        backgroundColor: "#E2E8F0",
                         display: "flex",
                         alignItems: "center",
-                        gap: "6px",
+                        justifyContent: "center",
+                        fontSize: "20px",
+                        fontWeight: "800",
+                        color: "#475569",
                       }}
                     >
-                      🚌{" "}
-                      <span>
-                        {driver.bus} (Route {driver.route})
-                      </span>
+                      {getInitials(driver.fullName)}
                     </div>
-                  )}
-                </div>
+                    <span
+                      style={{
+                        position: "absolute",
+                        bottom: "2px",
+                        right: "2px",
+                        width: "12px",
+                        height: "12px",
+                        backgroundColor:
+                          driver.status === "approved" ? "#16A34A" : "#CBD5E1",
+                        border: "2px solid white",
+                        borderRadius: "50%",
+                      }}
+                    />
+                  </div>
 
-                {/* Phone */}
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    color: "#64748B",
-                    fontSize: "13px",
-                    justifyContent: "center",
-                    marginBottom: "20px",
-                  }}
-                >
-                  <span>📞</span> {driver.phone}
-                </div>
+                  {/* Driver Details */}
+                  <div style={{ textAlign: "center", marginBottom: "16px" }}>
+                    <h3
+                      style={{
+                        margin: "0 0 2px 0",
+                        fontSize: "15px",
+                        fontWeight: 700,
+                        color: "#1E293B",
+                      }}
+                    >
+                      {driver.fullName}
+                    </h3>
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: "12px",
+                        color: "#94A3B8",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {driver.employee_id || "N/A"}
+                    </p>
+                  </div>
 
-                {/* Actions */}
-                <div
-                  style={{
-                    marginTop: "auto",
-                    paddingTop: "12px",
-                    borderTop: "1px solid #F1F5F9",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <button
+                  {/* Bus / Route Badge */}
+                  <div style={{ marginBottom: "12px" }}>
+                    {!hasBus ? (
+                      <div
+                        style={{
+                          backgroundColor: "#F1F5F9",
+                          color: "#94A3B8",
+                          padding: "8px 12px",
+                          borderRadius: "8px",
+                          fontSize: "11px",
+                          fontWeight: 700,
+                          textAlign: "center",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.5px",
+                        }}
+                      >
+                        🚫 Unassigned
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          backgroundColor: "#FEF3C7",
+                          color: "#B45309",
+                          padding: "8px 12px",
+                          borderRadius: "8px",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                        }}
+                      >
+                        🚌{" "}
+                        <span>
+                          {driver.bus_number} (Route {driver.route_number})
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Phone */}
+                  <div
                     style={{
-                      background: "none",
-                      border: "none",
-                      color: "#0056B3",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      color: "#64748B",
                       fontSize: "13px",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      padding: 0,
+                      justifyContent: "center",
+                      marginBottom: "20px",
                     }}
                   >
-                    View Profile
-                  </button>
-                  <button
+                    <span>📞</span> {driver.phone}
+                  </div>
+
+                  {/* Actions */}
+                  <div
                     style={{
-                      background: "none",
-                      border: "none",
-                      color: "#94A3B8",
-                      cursor: "pointer",
-                      fontSize: "16px",
+                      marginTop: "auto",
+                      paddingTop: "12px",
+                      borderTop: "1px solid #F1F5F9",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
                     }}
                   >
-                    ⋮
-                  </button>
+                    <button
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#0056B3",
+                        fontSize: "13px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                    >
+                      View Profile
+                    </button>
+                    <button
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#94A3B8",
+                        cursor: "pointer",
+                        fontSize: "16px",
+                      }}
+                    >
+                      ⋮
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {/* Add New Driver Card */}
             <div
+              onClick={() => navigate("/bus-registration")}
               style={{
                 background: "#F8FAFC",
                 border: "2px dashed #CBD5E1",

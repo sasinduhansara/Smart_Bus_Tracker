@@ -1,14 +1,154 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import AdminLayout from "../components/AdminLayout";
+import { adminAPI } from "../services/api";
+
+interface AlertItem {
+  id: string;
+  title: string;
+  message: string;
+  severity: string; // critical, warning, info
+  busNumber: string;
+  routeNumber: string;
+  resolved: boolean;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+interface AlertStats {
+  total: number;
+  unresolved: number;
+  critical: number;
+  resolvedToday: number;
+  resolutionRate: number;
+}
+
+type FilterKey = "all" | "unresolved" | "critical";
+
+const FILTER_TABS: { label: string; key: FilterKey }[] = [
+  { label: "All", key: "all" },
+  { label: "Unresolved", key: "unresolved" },
+  { label: "Critical", key: "critical" },
+];
+
+const SEVERITY_CONFIG: Record<string, { icon: string; color: string; bg: string; borderColor: string; label: string }> = {
+  critical: {
+    icon: "🚨",
+    color: "#BA1A1A",
+    bg: "#FEE2E2",
+    borderColor: "#BA1A1A",
+    label: "CRITICAL",
+  },
+  warning: {
+    icon: "⚠️",
+    color: "#D97706",
+    bg: "#FEF3C7",
+    borderColor: "#D97706",
+    label: "WARNING",
+  },
+  info: {
+    icon: "ℹ️",
+    color: "#2563EB",
+    bg: "#DBEAFE",
+    borderColor: "#2563EB",
+    label: "INFO",
+  },
+};
+
+function getTimeAgo(isoString: string): string {
+  if (!isoString) return "";
+  const now = new Date();
+  const then = new Date(isoString);
+  const diffMs = now.getTime() - then.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins} min${diffMins !== 1 ? "s" : ""} ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours} hour${diffHours !== 1 ? "s" : ""} ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays} day${diffDays !== 1 ? "s" : ""} ago`;
+}
 
 export default function SystemAlerts() {
-  const [activeTab, setActiveTab] = useState("All (24)");
+  const [activeTab, setActiveTab] = useState<FilterKey>("all");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [stats, setStats] = useState<AlertStats>({
+    total: 0,
+    unresolved: 0,
+    critical: 0,
+    resolvedToday: 0,
+    resolutionRate: 0,
+  });
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchAlerts();
+  }, []);
+
+  const fetchAlerts = async () => {
+    try {
+      const res = await adminAPI.getAlerts();
+      const data = res.data.data;
+      setAlerts(data.alerts || []);
+      setStats(data.stats);
+    } catch (err) {
+      console.error("Error fetching alerts:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResolve = async (alertId: string) => {
+    try {
+      await adminAPI.resolveAlert(alertId);
+      fetchAlerts();
+    } catch (err) {
+      console.error("Error resolving alert:", err);
+    }
+  };
+
+  const handleDelete = async (alertId: string) => {
+    try {
+      await adminAPI.deleteAlert(alertId);
+      fetchAlerts();
+    } catch (err) {
+      console.error("Error deleting alert:", err);
+    }
+  };
+
+  const filteredAlerts = alerts.filter((alert) => {
+    const matchesTab =
+      activeTab === "all" ||
+      (activeTab === "unresolved" && !alert.resolved) ||
+      (activeTab === "critical" && alert.severity === "critical" && !alert.resolved);
+
+    const query = searchTerm.toLowerCase().trim();
+    const matchesSearch =
+      !query ||
+      alert.title.toLowerCase().includes(query) ||
+      alert.message.toLowerCase().includes(query) ||
+      alert.busNumber.toLowerCase().includes(query) ||
+      alert.routeNumber.includes(query);
+
+    return matchesTab && matchesSearch;
+  });
+
+  const getTabCount = (key: FilterKey): number => {
+    if (key === "all") return stats.total;
+    if (key === "unresolved") return stats.unresolved;
+    if (key === "critical") return stats.critical;
+    return 0;
+  };
 
   return (
     <AdminLayout
       title="System Alerts & Notifications"
       showSearch
       searchPlaceholder="Search alerts, bus IDs, or routes..."
+      searchValue={searchTerm}
+      onSearchChange={setSearchTerm}
     >
       <div
         style={{
@@ -42,7 +182,7 @@ export default function SystemAlerts() {
               System Alerts & Notifications
             </h2>
             <p style={{ fontSize: "13px", color: "#64748B", margin: 0 }}>
-              Monitor and resolve real-time operational issues across the fleet.
+              {loading ? "Loading..." : `${stats.unresolved} unresolved, ${stats.critical} critical`}
             </p>
           </div>
           <div
@@ -54,559 +194,263 @@ export default function SystemAlerts() {
               gap: "4px",
             }}
           >
-            {["All (24)", "Unresolved (8)", "Critical (3)"].map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                style={{
-                  padding: "6px 16px",
-                  borderRadius: "6px",
-                  fontSize: "13px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  border: "none",
-                  transition: "all 0.2s ease",
-                  backgroundColor:
-                    activeTab === tab ? "#FFFFFF" : "transparent",
-                  color: activeTab === tab ? "#1E293B" : "#64748B",
-                  boxShadow:
-                    activeTab === tab
-                      ? "0 1px 3px rgba(0,0,0,0.1)"
-                      : "none",
-                }}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 🛑 1. CRITICAL BANNER — Bus Breakdown */}
-        <div
-          style={{
-            background: "#FFFFFF",
-            border: "1px solid #E2E8F0",
-            borderRadius: "16px",
-            display: "flex",
-            overflow: "hidden",
-            minHeight: "220px",
-            flexDirection: "row",
-          }}
-        >
-          {/* Red Side Block */}
-          <div
-            style={{
-              backgroundColor: "#BA1A1A",
-              width: "100px",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "20px",
-              color: "white",
-              gap: "8px",
-              flexShrink: 0,
-            }}
-          >
-            <span style={{ fontSize: "28px" }}>🚨</span>
-            <span
-              style={{
-                fontSize: "10px",
-                fontWeight: "800",
-                letterSpacing: "1px",
-              }}
-            >
-              CRITICAL
-            </span>
-          </div>
-
-          {/* Body */}
-          <div
-            style={{
-              flex: 1,
-              padding: "24px",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "space-between",
-              gap: "16px",
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                }}
-              >
-                <h3
+            {FILTER_TABS.map((tab) => {
+              const count = getTabCount(tab.key);
+              const label = `${tab.label} (${count})`;
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
                   style={{
-                    margin: "0 0 8px 0",
-                    fontSize: "18px",
-                    fontWeight: "800",
-                    color: "#BA1A1A",
+                    padding: "6px 16px",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    border: "none",
+                    transition: "all 0.2s ease",
+                    backgroundColor:
+                      activeTab === tab.key ? "#FFFFFF" : "transparent",
+                    color: activeTab === tab.key ? "#1E293B" : "#64748B",
+                    boxShadow:
+                      activeTab === tab.key
+                        ? "0 1px 3px rgba(0,0,0,0.1)"
+                        : "none",
                   }}
                 >
-                  Bus Breakdown: WP NB-4521
-                </h3>
-                <span
-                  style={{ fontSize: "12px", color: "#64748B", fontWeight: "500" }}
-                >
-                  2 mins ago
-                </span>
-              </div>
-              <p
-                style={{
-                  margin: 0,
-                  fontSize: "14px",
-                  color: "#475569",
-                  lineHeight: "1.5",
-                }}
-              >
-                Mechanical failure reported on Route 138 (Maharagama - Pettah). Bus
-                is currently stationary near Town Hall junction. 42 passengers
-                affected.
-              </p>
-            </div>
-
-            {/* Badges */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                flexWrap: "wrap",
-              }}
-            >
-              {["Route 138", "WP NB-4521", "Loc: 6.9189, 79.8624"].map(
-                (badge) => (
-                  <span
-                    key={badge}
-                    style={{
-                      background: "#F1F5F9",
-                      color: "#475569",
-                      padding: "4px 10px",
-                      borderRadius: "6px",
-                      fontSize: "11px",
-                      fontWeight: 700,
-                    }}
-                  >
-                    {badge}
-                  </span>
-                )
-              )}
-            </div>
-
-            {/* Actions */}
-            <div style={{ display: "flex", gap: "12px", paddingTop: "8px", flexWrap: "wrap" }}>
-              <button
-                style={{
-                  backgroundColor: "#00468C",
-                  color: "white",
-                  border: "none",
-                  padding: "10px 20px",
-                  borderRadius: "8px",
-                  fontWeight: "700",
-                  fontSize: "13px",
-                  cursor: "pointer",
-                }}
-              >
-                Dispatch Backup
-              </button>
-              <button
-                style={{
-                  backgroundColor: "#FFFFFF",
-                  color: "#00468C",
-                  border: "1px solid #E2E8F0",
-                  padding: "10px 20px",
-                  borderRadius: "8px",
-                  fontWeight: "700",
-                  fontSize: "13px",
-                  cursor: "pointer",
-                }}
-              >
-                View Details
-              </button>
-              <button
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: "#64748B",
-                  fontSize: "13px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  fontWeight: 600,
-                }}
-              >
-                <span>✔</span> Mark as Resolved
-              </button>
-            </div>
-          </div>
-
-          {/* Right Map Preview */}
-          <div
-            style={{
-              width: "240px",
-              backgroundColor: "#1E293B",
-              borderLeft: "1px solid #E2E8F0",
-              position: "relative",
-              flexShrink: 0,
-              display: "flex",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                opacity: 0.15,
-                backgroundImage:
-                  "radial-gradient(#FFFFFF 1px, transparent 1px)",
-                backgroundSize: "10px 10px",
-              }}
-            />
-            <div
-              style={{
-                position: "absolute",
-                top: "16px",
-                left: "16px",
-                backgroundColor: "rgba(255,255,255,0.95)",
-                padding: "8px 12px",
-                borderRadius: "8px",
-                border: "1px solid #CBD5E1",
-                maxWidth: "200px",
-              }}
-            >
-              <strong
-                style={{
-                  fontSize: "11px",
-                  color: "#00468C",
-                  display: "block",
-                }}
-              >
-                Incident Area
-              </strong>
-              <span style={{ fontSize: "10px", color: "#64748B" }}>
-                Cinnamon Gardens, Col 07. Proximity to 3 active backup buses.
-              </span>
-            </div>
-            <div
-              style={{
-                position: "absolute",
-                top: "65%",
-                left: "55%",
-                width: "12px",
-                height: "12px",
-                backgroundColor: "#BA1A1A",
-                borderRadius: "50%",
-                boxShadow: "0 0 0 6px rgba(186,26,26,0.3)",
-              }}
-            />
+                  {label}
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        {/* ⚠️ 2. SECONDARY GRID — Warning & Info */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-            gap: "20px",
-          }}
-        >
-          {/* Route Deviation */}
+        {/* ─── Alert List ─── */}
+        {loading ? (
           <div
             style={{
+              textAlign: "center",
+              padding: "60px 20px",
+              color: "#94A3B8",
               background: "#FFFFFF",
-              border: "1px solid #E2E8F0",
-              borderLeft: "4px solid #D97706",
               borderRadius: "14px",
-              padding: "20px",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "space-between",
+              border: "1px solid #E2E8F0",
             }}
           >
-            <div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  marginBottom: "12px",
-                }}
-              >
+            Loading alerts...
+          </div>
+        ) : filteredAlerts.length === 0 ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "60px 20px",
+              color: "#94A3B8",
+              background: "#FFFFFF",
+              borderRadius: "14px",
+              border: "1px solid #E2E8F0",
+            }}
+          >
+            <div style={{ fontSize: "48px", marginBottom: "12px" }}>🔔</div>
+            <h3 style={{ margin: "0 0 4px 0", color: "#1E293B" }}>
+              No alerts found
+            </h3>
+            <p style={{ margin: 0, fontSize: "13px" }}>
+              {searchTerm
+                ? `No alerts match "${searchTerm}".`
+                : "All clear! No alerts match the current filter."}
+            </p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            {filteredAlerts.map((alert) => {
+              const severityConf = SEVERITY_CONFIG[alert.severity] || SEVERITY_CONFIG.info;
+              return (
                 <div
-                  style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                  key={alert.id}
+                  style={{
+                    background: "#FFFFFF",
+                    border: `1px solid ${alert.resolved ? "#E2E8F0" : severityConf.borderColor}`,
+                    borderLeft: alert.resolved ? "4px solid #16A34A" : `4px solid ${severityConf.borderColor}`,
+                    borderRadius: "14px",
+                    padding: "20px 24px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    gap: "16px",
+                    opacity: alert.resolved ? 0.7 : 1,
+                    flexWrap: "wrap",
+                  }}
                 >
-                  <span
+                  <div style={{ flex: 1, minWidth: "200px" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        marginBottom: "8px",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: "18px",
+                          backgroundColor: severityConf.bg,
+                          padding: "6px",
+                          borderRadius: "8px",
+                        }}
+                      >
+                        {alert.resolved ? "✅" : severityConf.icon}
+                      </span>
+                      <div>
+                        <h4
+                          style={{
+                            margin: 0,
+                            fontSize: "15px",
+                            fontWeight: 700,
+                            color: alert.resolved ? "#16A34A" : "#1E293B",
+                          }}
+                        >
+                          {alert.title}
+                        </h4>
+                        {!alert.resolved && (
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: "800",
+                              color: severityConf.color,
+                              letterSpacing: "0.5px",
+                            }}
+                          >
+                            {severityConf.label}
+                          </span>
+                        )}
+                        {alert.resolved && (
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: "800",
+                              color: "#16A34A",
+                            }}
+                          >
+                            RESOLVED
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <p
+                      style={{
+                        margin: "0 0 12px 0",
+                        fontSize: "13px",
+                        color: "#475569",
+                        lineHeight: "1.5",
+                      }}
+                    >
+                      {alert.message}
+                    </p>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      {alert.busNumber && (
+                        <span
+                          style={{
+                            background: "#F1F5F9",
+                            color: "#475569",
+                            padding: "4px 10px",
+                            borderRadius: "6px",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                          }}
+                        >
+                          🚌 {alert.busNumber}
+                        </span>
+                      )}
+                      {alert.routeNumber && (
+                        <span
+                          style={{
+                            background: "#F1F5F9",
+                            color: "#475569",
+                            padding: "4px 10px",
+                            borderRadius: "6px",
+                            fontSize: "11px",
+                            fontWeight: 700,
+                          }}
+                        >
+                          Route {alert.routeNumber}
+                        </span>
+                      )}
+                      {alert.resolved && alert.resolved_by && (
+                        <span
+                          style={{
+                            fontSize: "11px",
+                            color: "#64748B",
+                          }}
+                        >
+                          Resolved by {alert.resolved_by}
+                        </span>
+                      )}
+                      <span
+                        style={{
+                          fontSize: "11px",
+                          color: "#94A3B8",
+                        }}
+                      >
+                        {getTimeAgo(alert.created_at)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
                     style={{
-                      backgroundColor: "#FEF3C7",
-                      padding: "6px",
-                      borderRadius: "6px",
-                      fontSize: "16px",
+                      display: "flex",
+                      gap: "8px",
+                      flexShrink: 0,
+                      alignItems: "flex-start",
                     }}
                   >
-                    🔄
-                  </span>
-                  <div>
-                    <h4
+                    {!alert.resolved && (
+                      <button
+                        onClick={() => handleResolve(alert.id)}
+                        style={{
+                          backgroundColor: "#00468C",
+                          color: "white",
+                          border: "none",
+                          padding: "8px 16px",
+                          borderRadius: "6px",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Resolve
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleDelete(alert.id)}
                       style={{
-                        margin: 0,
-                        fontSize: "15px",
+                        backgroundColor: "white",
+                        color: "#EF4444",
+                        border: "1px solid #FCA5A5",
+                        padding: "8px 12px",
+                        borderRadius: "6px",
+                        fontSize: "12px",
                         fontWeight: 700,
-                        color: "#1E293B",
+                        cursor: "pointer",
                       }}
                     >
-                      Route Deviation
-                    </h4>
-                    <span
-                      style={{
-                        fontSize: "10px",
-                        color: "#D97706",
-                        fontWeight: "800",
-                      }}
-                    >
-                      WARNING
-                    </span>
+                      Delete
+                    </button>
                   </div>
                 </div>
-                <span style={{ fontSize: "11px", color: "#94A3B8" }}>
-                  15 mins ago
-                </span>
-              </div>
-              <p
-                style={{
-                  margin: 0,
-                  fontSize: "13px",
-                  color: "#475569",
-                  lineHeight: "1.5",
-                }}
-              >
-                Bus WP GA-9980 (Route 122) has deviated from the assigned path by
-                1.2km near Kottawa. GPS path shows unofficial shortcut.
-              </p>
-            </div>
-            <div style={{ display: "flex", gap: "10px", marginTop: "16px" }}>
-              <button
-                style={{
-                  backgroundColor: "#78350F",
-                  color: "white",
-                  border: "none",
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                Contact Driver
-              </button>
-              <button
-                style={{
-                  backgroundColor: "white",
-                  color: "#475569",
-                  border: "1px solid #CBD5E1",
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                Details
-              </button>
-            </div>
+              );
+            })}
           </div>
+        )}
 
-          {/* Delay Alert */}
-          <div
-            style={{
-              background: "#FFFFFF",
-              border: "1px solid #E2E8F0",
-              borderLeft: "4px solid #2563EB",
-              borderRadius: "14px",
-              padding: "20px",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "space-between",
-            }}
-          >
-            <div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  marginBottom: "12px",
-                }}
-              >
-                <div
-                  style={{ display: "flex", alignItems: "center", gap: "8px" }}
-                >
-                  <span
-                    style={{
-                      backgroundColor: "#DBEAFE",
-                      padding: "6px",
-                      borderRadius: "6px",
-                      fontSize: "16px",
-                    }}
-                  >
-                    🕒
-                  </span>
-                  <div>
-                    <h4
-                      style={{
-                        margin: 0,
-                        fontSize: "15px",
-                        fontWeight: 700,
-                        color: "#1E293B",
-                      }}
-                    >
-                      Delay Alert
-                    </h4>
-                    <span
-                      style={{
-                        fontSize: "10px",
-                        color: "#2563EB",
-                        fontWeight: "800",
-                      }}
-                    >
-                      INFO
-                    </span>
-                  </div>
-                </div>
-                <span style={{ fontSize: "11px", color: "#94A3B8" }}>
-                  28 mins ago
-                </span>
-              </div>
-              <p
-                style={{
-                  margin: 0,
-                  fontSize: "13px",
-                  color: "#475569",
-                  lineHeight: "1.5",
-                }}
-              >
-                Expected +15 min delay for all services arriving at Kandy Clock
-                Tower due to local parade. ETA updates pushed to passenger app.
-              </p>
-            </div>
-            <div style={{ display: "flex", gap: "10px", marginTop: "16px" }}>
-              <button
-                style={{
-                  backgroundColor: "#E2E8F0",
-                  color: "#475569",
-                  border: "none",
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                Dismiss
-              </button>
-              <button
-                style={{
-                  backgroundColor: "white",
-                  color: "#2563EB",
-                  border: "1px solid #3B82F6",
-                  padding: "8px 16px",
-                  borderRadius: "6px",
-                  fontSize: "12px",
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                Broadcast Update
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* ⚙️ 3. Cloud Sync Delay Bar */}
-        <div
-          style={{
-            backgroundColor: "#FFFFFF",
-            border: "1px solid #E2E8F0",
-            borderRadius: "12px",
-            padding: "16px 20px",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "12px",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "12px",
-              flex: 1,
-              minWidth: "200px",
-            }}
-          >
-            <span
-              style={{
-                fontSize: "20px",
-                backgroundColor: "#F1F5F9",
-                padding: "8px",
-                borderRadius: "8px",
-              }}
-            >
-              ⚙
-            </span>
-            <div>
-              <h4
-                style={{
-                  margin: "0 0 2px 0",
-                  fontSize: "14px",
-                  fontWeight: 700,
-                  color: "#1E293B",
-                }}
-              >
-                System Alert: Cloud Sync Delay
-              </h4>
-              <p style={{ margin: 0, fontSize: "12px", color: "#64748B" }}>
-                Database synchronization with the Matara hub is currently
-                experiencing high latency (250ms). Telemetry data may be delayed
-                by up to 30 seconds.
-              </p>
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
-            <button
-              style={{
-                backgroundColor: "white",
-                color: "#475569",
-                border: "1px solid #CBD5E1",
-                padding: "8px 16px",
-                borderRadius: "6px",
-                fontSize: "12px",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              View Logs
-            </button>
-            <button
-              style={{
-                backgroundColor: "#00468C",
-                color: "white",
-                border: "none",
-                padding: "8px 16px",
-                borderRadius: "6px",
-                fontSize: "12px",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              Acknowledge
-            </button>
-          </div>
-        </div>
-
-        {/* 📊 4. Bottom KPIs */}
+        {/* 📊 Bottom KPIs */}
         <div
           style={{
             display: "grid",
@@ -614,61 +458,7 @@ export default function SystemAlerts() {
             gap: "20px",
           }}
         >
-          {/* Resolved Recently */}
-          <div
-            style={{
-              background: "#FFFFFF",
-              border: "1px solid #E2E8F0",
-              borderRadius: "12px",
-              padding: "20px",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "center",
-              minHeight: "140px",
-            }}
-          >
-            <h4
-              style={{
-                margin: "0 0 12px 0",
-                fontSize: "13px",
-                fontWeight: 700,
-                color: "#1E293B",
-              }}
-            >
-              Resolved Recently
-            </h4>
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "10px",
-                fontSize: "12px",
-              }}
-            >
-              <div style={{ display: "flex", gap: "6px" }}>
-                <span style={{ color: "#16A34A" }}>✔</span>
-                <div>
-                  <strong>Speeding: NB-9002</strong>
-                  <br />
-                  <span style={{ fontSize: "10px", color: "#64748B" }}>
-                    Resolved by Supervisor A. Siriwardena
-                  </span>
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: "6px" }}>
-                <span style={{ color: "#16A34A" }}>✔</span>
-                <div>
-                  <strong>Fuel Alert: GA-1123</strong>
-                  <br />
-                  <span style={{ fontSize: "10px", color: "#64748B" }}>
-                    Station stop confirmed by driver
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Avg Response */}
+          {/* Unresolved */}
           <div
             style={{
               background: "#FFFFFF",
@@ -690,24 +480,21 @@ export default function SystemAlerts() {
                 letterSpacing: "0.5px",
               }}
             >
-              AVERAGE RESPONSE
+              UNRESOLVED
             </span>
             <p
               style={{
                 margin: "4px 0",
                 fontSize: "32px",
                 fontWeight: 800,
-                color: "#00468C",
+                color: "#D97706",
               }}
             >
-              4.2m
+              {loading ? "..." : stats.unresolved}
             </p>
-            <span style={{ fontSize: "11px", color: "#16A34A" }}>
-              📉 12% from yesterday
-            </span>
           </div>
 
-          {/* Critical Ratio */}
+          {/* Critical */}
           <div
             style={{
               background: "#FFFFFF",
@@ -729,7 +516,7 @@ export default function SystemAlerts() {
                 letterSpacing: "0.5px",
               }}
             >
-              CRITICAL RATIO
+              CRITICAL
             </span>
             <p
               style={{
@@ -739,11 +526,8 @@ export default function SystemAlerts() {
                 color: "#DC2626",
               }}
             >
-              1:12
+              {loading ? "..." : stats.critical}
             </p>
-            <span style={{ fontSize: "11px", color: "#64748B" }}>
-              Alerts per fleet unit
-            </span>
           </div>
 
           {/* Resolved Today */}
@@ -778,11 +562,44 @@ export default function SystemAlerts() {
                 color: "#16A34A",
               }}
             >
-              118
+              {loading ? "..." : stats.resolvedToday}
             </p>
-            <span style={{ fontSize: "11px", color: "#16A34A" }}>
-              92% resolution rate
+          </div>
+
+          {/* Resolution Rate */}
+          <div
+            style={{
+              background: "#FFFFFF",
+              border: "1px solid #E2E8F0",
+              borderRadius: "12px",
+              padding: "20px",
+              textAlign: "center",
+              display: "flex",
+              flexDirection: "column",
+              justifyContent: "center",
+              minHeight: "140px",
+            }}
+          >
+            <span
+              style={{
+                fontSize: "10px",
+                color: "#64748B",
+                fontWeight: 700,
+                letterSpacing: "0.5px",
+              }}
+            >
+              RESOLUTION RATE
             </span>
+            <p
+              style={{
+                margin: "4px 0",
+                fontSize: "32px",
+                fontWeight: 800,
+                color: "#1D4ED8",
+              }}
+            >
+              {loading ? "..." : `${stats.resolutionRate}%`}
+            </p>
           </div>
         </div>
       </div>

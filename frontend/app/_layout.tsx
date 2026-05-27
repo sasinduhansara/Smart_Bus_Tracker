@@ -311,7 +311,15 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding" options={{ orientation: "all" }} />
         <Stack.Screen name="welcome" options={{ orientation: "all" }} />
         <Stack.Screen name="driver/login" options={{ orientation: "all" }} />
+        <Stack.Screen
+          name="driver/dashboard"
+          options={{ orientation: "all" }}
+        />
         <Stack.Screen name="driver/trip" options={{ orientation: "all" }} />
+        <Stack.Screen
+          name="driver/active-trip"
+          options={{ orientation: "all" }}
+        />
         <Stack.Screen name="passenger/login" options={{ orientation: "all" }} />
         <Stack.Screen name="passenger/home" options={{ orientation: "all" }} />
         <Stack.Screen name="passenger/map" options={{ orientation: "all" }} />

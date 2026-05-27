@@ -44,6 +44,7 @@ export default function DriverLoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
 
   const otpRef = useRef(null);
+  const isVerifyingRef = useRef(false); // 🔒 Extra guard against double-click
 
   // Timer for OTP countdown
   useEffect(() => {
@@ -67,7 +68,7 @@ export default function DriverLoginScreen() {
     const rawPhone = phone.trim();
     // User sees +94 prefix, so they type 9 digits (e.g. 771234567)
     if (!rawPhone || rawPhone.length < 9) {
-      Alert.alert("⚠️ Error", "Please enter a valid phone number!");
+      Alert.alert(" Error", "Please enter a valid phone number!");
       return;
     }
 
@@ -79,11 +80,13 @@ export default function DriverLoginScreen() {
       setOtpTimer(300); // 5 min
       setStep("otp");
       setTimeout(() => otpRef.current?.focus(), 300);
-            console.log("📱 OTP from backend:", res.data?.otp);
-      Alert.alert("📱 OTP Sent!", `Your OTP: ${res.data?.otp} (valid 5 min)
-Check phone: ${rawPhone}`);
+      Alert.alert(
+        "📱 OTP Sent!",
+        `A 6-digit OTP has been sent to your phone.
+Valid for 5 minutes.`,
+      );
     } catch (error) {
-      Alert.alert("❌ Failed", error.message || "Could not send OTP");
+      Alert.alert(" Failed", error.message || "Could not send OTP");
     } finally {
       setIsLoading(false);
     }
@@ -91,21 +94,26 @@ Check phone: ${rawPhone}`);
 
   // ─── Step 2: Verify OTP & Login ─────────────────────────────
   const handleVerifyOtp = async () => {
+    // 🔒 Guard: prevent double-click / race condition (using ref for instant check)
+    if (isVerifyingRef.current || isLoading) {
+      console.log(" handleVerifyOtp skipped - already verifying");
+      return;
+    }
+    isVerifyingRef.current = true;
+
     const cleanOtp = otp.trim();
     const rawPhone = phone.trim();
-    const normalizedPhone = rawPhone.startsWith("0")
-      ? "+94" + rawPhone.substring(1)
-      : rawPhone.startsWith("+94")
-        ? rawPhone
-        : "+94" + rawPhone;
+    // Use the SAME normalizePhone() helper for consistency
+    const normalizedPhone = normalizePhone(rawPhone);
 
     // ← Debug logs
     console.log("📱 Raw phone from state:", rawPhone);
     console.log("📱 Normalized phone sent:", normalizedPhone);
-    console.log("🔑 OTP sent:", cleanOtp);
+    console.log(" OTP sent:", cleanOtp);
 
     if (!cleanOtp || cleanOtp.length < 6) {
-      Alert.alert("⚠️ Error", "Please enter the 6-digit OTP!");
+      isVerifyingRef.current = false;
+      Alert.alert(" Error", "Please enter the 6-digit OTP!");
       return;
     }
 
@@ -117,47 +125,47 @@ Check phone: ${rawPhone}`);
       if (token) {
         await AsyncStorage.setItem("authToken", token);
         await AsyncStorage.setItem("driver", JSON.stringify(driver));
-        Alert.alert("✅ Welcome!", `Hello ${driver.fullName}!`, [
-          {
-            text: "Go to Dashboard",
-            onPress: () => router.replace("/driver/dashboard"),
-          },
-        ]);
+        // Don't show alert - just navigate immediately
+        router.replace("/driver/dashboard");
       } else {
-        Alert.alert("❌ Login Failed", "No token received. Please try again.");
+        Alert.alert(" Login Failed", "No token received. Please try again.");
       }
     } catch (error) {
       console.log("🔍 Login Error Details:", error.message);
-      if (error.message?.includes("No driver found")) {
-        Alert.alert(
-          "❌ Not Found",
-          "No driver registered with this phone number. Please register first.",
-        );
-      } else if (error.message?.includes("expired")) {
-        Alert.alert(
-          "⏰ OTP Expired",
-          "Your OTP has expired. Please request a new one.",
-        );
-      } else if (error.message?.includes("Invalid or expired")) {
-        Alert.alert(
-          "❌ Invalid OTP",
-          "The OTP you entered is invalid or expired. Please try again.",
-        );
-      } else {
-        Alert.alert(
-          "❌ Login Failed",
-          error.message || "Invalid OTP. Please try again.",
-        );
+      // Only show error if we haven't already navigated away
+      if (!error.message?.includes("navigation")) {
+        if (error.message?.includes("No driver found")) {
+          Alert.alert(
+            " Not Found",
+            "No driver registered with this phone number. Please register first.",
+          );
+        } else if (error.message?.includes("expired")) {
+          Alert.alert(
+            " OTP Expired",
+            "Your OTP has expired. Please request a new one.",
+          );
+        } else if (error.message?.includes("Invalid or expired")) {
+          Alert.alert(
+            " Invalid OTP",
+            "The OTP you entered is invalid or expired. Please try again.",
+          );
+        } else {
+          Alert.alert(
+            " Login Failed",
+            error.message || "Invalid OTP. Please try again.",
+          );
+        }
       }
     } finally {
       setIsLoading(false);
+      isVerifyingRef.current = false;
     }
   };
 
   // ─── Employee ID + Password Login ───────────────────────────
   const handleEmpLogin = async () => {
     if (!employeeId.trim() || !password.trim()) {
-      Alert.alert("⚠️ Error", "Please enter Employee ID and password!");
+      Alert.alert(" Error", "Please enter Employee ID and password!");
       return;
     }
 
@@ -169,7 +177,7 @@ Check phone: ${rawPhone}`);
       if (token) {
         await AsyncStorage.setItem("authToken", token);
         await AsyncStorage.setItem("driver", JSON.stringify(driver));
-        Alert.alert("✅ Welcome!", `Hello ${driver.fullName}!`, [
+        Alert.alert(" Welcome!", `Hello ${driver.fullName}!`, [
           {
             text: "Go to Dashboard",
             onPress: () => router.replace("/driver/dashboard"),

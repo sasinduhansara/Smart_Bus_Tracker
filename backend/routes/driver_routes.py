@@ -126,9 +126,7 @@ def send_otp():
             phone_variants.append('0' + phone[3:])
             phone_variants.append(phone[3:])
 
-        # Clean up old OTPs for all phone variants
-        get_otp_collection().delete_many({"phone": {"$in": list(set(phone_variants))}})
-
+        # ⚡ Store OTP first, then clean up old ones
         for p in set(phone_variants):
             get_otp_collection().update_one(
                 {"phone": p},
@@ -140,6 +138,12 @@ def send_otp():
                 }},
                 upsert=True
             )
+
+        # Clean up old OTPs for same phone variants (but NOT the one we just stored)
+        get_otp_collection().delete_many({
+            "phone": {"$in": list(set(phone_variants))},
+            "otp": {"$ne": otp}
+        })
 
         # ─── Send SMS via TextLk OAuth2 API ───────────────────────
         try:
@@ -177,8 +181,7 @@ def send_otp():
             "success": True,
             "message": "OTP sent successfully",
             "data": {
-                "phone": phone,
-                "otp": otp  # ⚠️ Remove in production! Only for dev testing
+                "phone": phone
             }
         })
 
@@ -351,6 +354,7 @@ def verify_otp_and_register():
 def login():
     try:
         data = request.json
+        print(f"🔐 /login received: phone='{data.get('phone')}', otp='{data.get('otp')}', employeeId='{data.get('employeeId')}'")
         
         # ─── Support both: employeeID+password OR phone+otp ──────
         employee_id = data.get("employeeId")
@@ -391,15 +395,25 @@ def login():
 
             if not otp_record:
                 print(f"❌ OTP NOT matched! Attempted variants: {phone_variants}")
-                print(f"🔍 Provided OTP: {otp}")
+                print(f"🔍 Provided OTP: '{otp}' (type: {type(otp).__name__})")
                 # Debug: Check if ANY OTP exists for this phone
-                for pv in phone_variants:
+                debug_info = []
+                for pv in set(phone_variants):
                     existing = get_otp_collection().find_one({"phone": pv})
                     if existing:
-                        print(f"  OTP found for {pv}: otp={existing.get('otp')}, expires={existing.get('expires_at')}")
+                        expires = existing.get('expires_at')
+                        now = datetime.utcnow()
+                        expired = expires < now if expires else True
+                        print(f"  OTP found for '{pv}': otp='{existing.get('otp')}', expires={expires}, expired={expired}")
+                        debug_info.append({"phone": pv, "otp": str(existing.get('otp')), "expired": bool(expired)})
                     else:
-                        print(f"  No OTP found for {pv}")
-                return jsonify({"success": False, "message": "Invalid or expired OTP"}), 400
+                        print(f"  No OTP found for '{pv}'")
+                        debug_info.append({"phone": pv, "found": False})
+                return jsonify({
+                    "success": False, 
+                    "message": "Invalid or expired OTP",
+                    "debug": debug_info
+                }), 400
 
             # Find driver by phone - try multiple format matches
             driver = get_driver_collection().find_one({"phone": phone})  # normalized: +947XXXXXXXX
@@ -423,8 +437,11 @@ def login():
                 msg = "Application still pending" if driver["status"] == "pending" else "Application rejected"
                 return jsonify({"success": False, "message": msg}), 403
 
-            # Delete used OTP (for all variants)
-            get_otp_collection().delete_many({"phone": {"$in": list(set(phone_variants))}})
+            # Mark OTP as used instead of deleting (to handle double-requests)
+            get_otp_collection().update_many(
+                {"phone": {"$in": list(set(phone_variants))}},
+                {"$set": {"used": True, "used_at": datetime.utcnow()}}
+            )
 
             token = jwt.encode(
                 {
@@ -610,10 +627,9 @@ def send_login_otp():
             phone_variants.append('0' + phone[3:])  # 07XXXXXXXX
             phone_variants.append(phone[3:])  # 7XXXXXXXX (no leading 0)
 
-        # Clean up any existing OTPs for this phone before storing new one
-        get_otp_collection().delete_many({"phone": {"$in": list(set(phone_variants))}})
-
-        # Store OTP in all format variants so login can match any
+        # ⚡ Use update_one with upsert for each variant (no delete first)
+        # This prevents race conditions where deleting then re-creating
+        # could lose OTPs if the endpoint is called twice rapidly
         for p in set(phone_variants):
             get_otp_collection().update_one(
                 {"phone": p},
@@ -625,6 +641,13 @@ def send_login_otp():
                 }},
                 upsert=True
             )
+
+        # Clean up old OTP variants only AFTER storing new ones
+        # This prevents a window where no OTP exists for some variants
+        get_otp_collection().delete_many({
+            "phone": {"$in": list(set(phone_variants))},
+            "otp": {"$ne": otp}  # Only delete ones with DIFFERENT OTP
+        })
 
         # ─── Send SMS via TextLk ────────────────────────────────
         try:
@@ -650,8 +673,7 @@ def send_login_otp():
             "success": True,
             "message": "OTP sent to your phone",
             "data": {
-                "phone": phone,
-                "otp": otp  # Dev mode only!
+                "phone": phone
             }
         })
 
