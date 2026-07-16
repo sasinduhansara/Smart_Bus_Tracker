@@ -1,0 +1,4 @@
+# Copy this file to local.properties and replace only the local values.
+# Never commit local.properties or a real Google Maps API key.
+sdk.dir=/PATH/TO/YOUR/ANDROID/SDK
+GOOGLE_MAPS_API_KEY=YOUR_RESTRICTED_ANDROID_MAPS_KEY
