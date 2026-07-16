@@ -1,66 +1,159 @@
-"""
-   GamanaLK - Smart Bus Tracker Backend
-   Python + Flask + MongoDB
-"""
-
 import os
-from dotenv import load_dotenv
-load_dotenv()
 
 from flask import Flask, jsonify
-from flask_socketio import SocketIO
 from flask_cors import CORS
-from flask_pymongo import PyMongo
+from flask_socketio import SocketIO
+from pymongo.errors import PyMongoError
+from werkzeug.exceptions import HTTPException
+
+from config import client
+from routes.admin_routes import admin_bp
+from routes.auth_routes import auth_bp
+from routes.bus_routes import bus_bp
+from routes.document_routes import document_bp
+from routes.eta_routes import eta_bp
+from routes.route_routes import route_bp
+
+
+def get_allowed_origins():
+    configured_origins = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://localhost:8081",
+    ).strip()
+
+    if configured_origins == "*":
+        return "*"
+
+    return [
+        origin.strip()
+        for origin in configured_origins.split(",")
+        if origin.strip()
+    ]
+
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "gamanalk_secret")
-CORS(app, supports_credentials=True, origins=["http://localhost:8081", "http://localhost:8082", "http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://192.168.8.102:8081"])
 
-# MongoDB setup - use MONGO_URI directly from .env
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/bus_tracker")
-app.config["MONGO_URI"] = MONGO_URI
-print(f"📦 Connecting to MongoDB...")
-mongo = PyMongo(app)
-app.mongo = mongo
+app.config["PROPAGATE_EXCEPTIONS"] = False
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
-socketio = SocketIO(app, cors_allowed_origins="*")
+debug_mode = os.getenv(
+    "FLASK_DEBUG",
+    "false",
+).strip().lower() == "true"
 
-from routes.index import index_bp
-from routes.driver_routes import driver_bp
-from routes.passenger_routes import passenger_bp
-from routes.admin_routes import admin_bp
+app.config["DEBUG"] = debug_mode
 
-app.register_blueprint(index_bp)
-app.register_blueprint(driver_bp)
-app.register_blueprint(passenger_bp)
+allowed_origins = get_allowed_origins()
+
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": allowed_origins,
+        }
+    },
+)
+
+socketio = SocketIO(
+    app,
+    cors_allowed_origins=allowed_origins,
+    async_mode="threading",
+)
+
+
+app.register_blueprint(bus_bp)
+app.register_blueprint(eta_bp)
+app.register_blueprint(route_bp)
+app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
-
-# Seed default admin on startup
-with app.app_context():
-    from models.admin import AdminModel
-    admin_model = AdminModel(mongo)
-    admin_model.seed_default_admin()
-
-from services.socket_service import register_socket_events, active_buses
-
-register_socket_events(socketio)
+app.register_blueprint(document_bp)
 
 
-@app.route("/api/active-buses")
-def get_active_buses():
-    return jsonify(list(active_buses.values()))
+@app.errorhandler(PyMongoError)
+def handle_mongo_error(error):
+    app.logger.exception(
+        "MongoDB operation failed",
+        exc_info=error,
+    )
+
+    response = {
+        "error": "Database connection failed"
+    }
+
+    if app.debug:
+        response["details"] = str(error)
+
+    return jsonify(response), 503
 
 
-@app.route("/api/health")
-def health_check():
+@app.errorhandler(Exception)
+def handle_unexpected_error(error):
+    if isinstance(error, HTTPException):
+        return jsonify({
+            "error": error.description
+        }), error.code
+
+    app.logger.exception(
+        "Unexpected server error",
+        exc_info=error,
+    )
+
+    response = {
+        "error": "Internal server error"
+    }
+
+    if app.debug:
+        response["details"] = str(error)
+
+    return jsonify(response), 500
+
+
+@app.route("/")
+def home():
     return jsonify({
-        "status": "ok",
-        "message": "GamanaLK API is running",
-        "timestamp": __import__("datetime").datetime.now().isoformat()
+        "message": "Smart Bus Tracking Backend is running!"
     })
 
 
-if __name__ == "__main__":
-    print("🚀 GamanaLK Server Starting...")
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+@app.route("/api/db-check")
+def db_check():
+    try:
+        client.admin.command("ping")
 
+        return jsonify({
+            "status": "MongoDB connected successfully!"
+        })
+    except Exception as error:
+        app.logger.exception(
+            "MongoDB health check failed",
+            exc_info=error,
+        )
+
+        response = {
+            "status": "MongoDB connection failed"
+        }
+
+        if app.debug:
+            response["error"] = str(error)
+
+        return jsonify(response), 503
+
+
+@socketio.on("connect")
+def handle_connect():
+    app.logger.info("Socket client connected")
+
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    app.logger.info("Socket client disconnected")
+
+
+if __name__ == "__main__":
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=5000,
+        debug=debug_mode,
+        allow_unsafe_werkzeug=debug_mode,
+    )
