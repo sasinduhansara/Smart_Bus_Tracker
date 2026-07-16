@@ -5,6 +5,7 @@
 !.env.example
 **/.env
 **/.env.*
+!**/.env.example
 
 # Python
 venv/
@@ -25,6 +26,11 @@ yarn-error.log*
 **/android/local.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
+hs_err_pid*.log
+**/hs_err_pid*.log
+*.hprof
 
 # iOS
 **/ios/Pods/
@@ -38,5 +44,5 @@ uploads/
 # OS / IDE
 .DS_Store
 .idea/
-.vscode/
-hs_err_pid*.log
+.vscode/*
+!.vscode/launch.json
