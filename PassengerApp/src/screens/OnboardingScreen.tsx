@@ -120,7 +120,7 @@ function OnboardingScreen({
     }
 
     if (isFinalPage) {
-      void finishOnboarding();
+      finishOnboarding();
       return;
     }
 

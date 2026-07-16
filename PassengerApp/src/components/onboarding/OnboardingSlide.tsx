@@ -30,11 +30,8 @@ function OnboardingSlide({
       <View
         style={[
           styles.imageCard,
-          {
-            height: imageHeight,
-            marginHorizontal: compact ? 20 : 24,
-            borderRadius: compact ? 24 : 30,
-          },
+          { height: imageHeight },
+          compact && styles.imageCardCompact,
         ]}
       >
         <Image
@@ -47,7 +44,12 @@ function OnboardingSlide({
         />
       </View>
 
-      <View style={[styles.copyContainer, { paddingHorizontal: compact ? 28 : 34 }]}>
+      <View
+        style={[
+          styles.copyContainer,
+          compact && styles.copyContainerCompact,
+        ]}
+      >
         <Text
           style={[styles.title, compact && styles.titleCompact]}
           numberOfLines={2}
@@ -70,11 +72,17 @@ const styles = StyleSheet.create({
   imageCard: {
     overflow: 'hidden',
     backgroundColor: ONBOARDING_COLORS.white,
+    borderRadius: 30,
+    marginHorizontal: 24,
     shadowColor: ONBOARDING_COLORS.primary,
     shadowOffset: { width: 0, height: 14 },
     shadowOpacity: 0.14,
     shadowRadius: 26,
     elevation: 8,
+  },
+  imageCardCompact: {
+    borderRadius: 24,
+    marginHorizontal: 20,
   },
   heroImage: {
     width: '100%',
@@ -83,6 +91,10 @@ const styles = StyleSheet.create({
   copyContainer: {
     alignItems: 'center',
     marginTop: 28,
+    paddingHorizontal: 34,
+  },
+  copyContainerCompact: {
+    paddingHorizontal: 28,
   },
   title: {
     color: ONBOARDING_COLORS.brandBlue,

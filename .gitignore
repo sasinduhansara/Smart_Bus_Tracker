@@ -1,0 +1,41 @@
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Android
+**/android/.gradle/
+**/android/build/
+**/android/app/build/
+**/android/local.properties
+*.jks
+*.keystore
+
+# iOS
+**/ios/Pods/
+**/ios/build/
+DerivedData/
+
+# Sensitive uploads
+uploads/
+**/uploads/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/

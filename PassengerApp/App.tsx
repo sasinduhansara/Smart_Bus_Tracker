@@ -34,7 +34,7 @@ function App(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
-    void loadOnboardingState();
+    loadOnboardingState();
   }, [loadOnboardingState]);
 
   const handleOnboardingFinished = useCallback(() => {
