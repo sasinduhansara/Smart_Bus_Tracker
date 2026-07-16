@@ -39,3 +39,4 @@ uploads/
 .DS_Store
 .idea/
 .vscode/
+hs_err_pid*.log
