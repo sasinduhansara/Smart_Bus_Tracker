@@ -3,7 +3,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import OnboardingScreen from './src/screens/OnboardingScreen';
 import StartupLoadingScreen from './src/screens/StartupLoadingScreen';
-import LiveMapScreen from './src/screens/LiveMapScreen';
+import PassengerAppShell from './src/navigation/PassengerAppShell';
 import { hasCompletedOnboarding } from './src/services/onboardingStorage';
 
 type StartupState = 'checking' | 'onboarding' | 'ready' | 'error';
@@ -45,7 +45,7 @@ function App(): React.JSX.Element {
   return (
     <SafeAreaProvider>
       {startupState === 'ready' ? (
-        <LiveMapScreen />
+        <PassengerAppShell />
       ) : startupState === 'onboarding' ? (
         <OnboardingScreen onFinished={handleOnboardingFinished} />
       ) : (

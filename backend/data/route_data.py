@@ -1,7 +1,8 @@
+import os
 from typing import Any
 
 
-DEVELOPMENT_ROUTES: list[dict[str, Any]] = [
+_DEVELOPMENT_ROUTES: list[dict[str, Any]] = [
     {
         "routeNumber": "123",
         "name": "Kuliyapitiya - Kurunegala",
@@ -62,3 +63,10 @@ DEVELOPMENT_ROUTES: list[dict[str, Any]] = [
         ],
     },
 ]
+
+DEVELOPMENT_ROUTES: list[dict[str, Any]] = (
+    _DEVELOPMENT_ROUTES
+    if os.getenv("ENABLE_DEVELOPMENT_ROUTE_FALLBACK", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+    else []
+)

@@ -66,3 +66,64 @@ export type SocketConnectionStatus =
   | 'disconnected'
   | 'reconnecting'
   | 'error';
+
+export interface RouteStopsResponse {
+  status: 'success';
+  routeNumber: string;
+  stops: BusStop[];
+}
+
+export type PassengerSearchResultType = 'route' | 'stop';
+
+export interface PassengerSearchResult {
+  id: string;
+  type: PassengerSearchResultType;
+  title: string;
+  subtitle: string;
+  routeNumber: string;
+  stopId?: string;
+}
+
+export interface PassengerSearchResponse {
+  status: 'success';
+  query: string;
+  results: PassengerSearchResult[];
+}
+
+export interface SavedStop {
+  id: string;
+  routeNumber: string;
+  stopId: string;
+  name: string;
+  savedAt: string;
+}
+
+export interface RecentTrip {
+  id: string;
+  routeNumber: string;
+  destinationName: string;
+  destinationStopId?: string;
+  originName?: string;
+  viewedAt: string;
+}
+
+export interface RecentSearch {
+  id: string;
+  type: PassengerSearchResultType;
+  title: string;
+  subtitle: string;
+  routeNumber: string;
+  stopId?: string;
+  searchedAt: string;
+}
+
+export interface NearbyBus {
+  bus: BusLocation;
+  routeName?: string;
+  destinationName?: string;
+  nextStop?: BusStop;
+  distanceKm?: number;
+  status: BusLiveStatus;
+  eta?: EtaPredictionResponse;
+  etaLoading: boolean;
+}

@@ -3,7 +3,9 @@ import type {
   BusLocation,
   EtaPredictionRequest,
   EtaPredictionResponse,
+  PassengerSearchResponse,
   RouteDetails,
+  RouteStopsResponse,
   RouteSummary,
 } from '../types';
 
@@ -22,6 +24,8 @@ interface RouteDetailsResponse {
   route: RouteDetails;
 }
 
+const routeDetailsCache = new Map<string, Promise<RouteDetailsResponse>>();
+
 function getErrorMessage(data: unknown, fallbackMessage: string): string {
   if (data && typeof data === 'object') {
     const response = data as ApiErrorResponse;
@@ -32,10 +36,7 @@ function getErrorMessage(data: unknown, fallbackMessage: string): string {
   return fallbackMessage;
 }
 
-async function request<T>(
-  path: string,
-  options: RequestInit = {},
-): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
@@ -129,10 +130,53 @@ export function getRoutes(): Promise<RoutesResponse> {
 
 export function getRouteDetails(
   routeNumber: string,
+  forceRefresh = false,
 ): Promise<RouteDetailsResponse> {
-  return request<RouteDetailsResponse>(
-    `/api/routes/${encodeURIComponent(routeNumber)}`,
+  const normalizedRouteNumber = routeNumber.trim();
+
+  if (forceRefresh) {
+    routeDetailsCache.delete(normalizedRouteNumber);
+  }
+
+  const cachedRequest = routeDetailsCache.get(normalizedRouteNumber);
+
+  if (cachedRequest) {
+    return cachedRequest;
+  }
+
+  const routeRequest = request<RouteDetailsResponse>(
+    '/api/routes/' + encodeURIComponent(normalizedRouteNumber),
+  ).catch(error => {
+    routeDetailsCache.delete(normalizedRouteNumber);
+    throw error;
+  });
+
+  routeDetailsCache.set(normalizedRouteNumber, routeRequest);
+  return routeRequest;
+}
+
+export function getRouteStops(
+  routeNumber: string,
+): Promise<RouteStopsResponse> {
+  return request<RouteStopsResponse>(
+    '/api/routes/' + encodeURIComponent(routeNumber) + '/stops',
   );
+}
+
+export function searchPassengerDirectory(
+  query: string,
+  limit = 12,
+  signal?: AbortSignal,
+): Promise<PassengerSearchResponse> {
+  const searchParams =
+    '?q=' +
+    encodeURIComponent(query.trim()) +
+    '&limit=' +
+    encodeURIComponent(String(limit));
+
+  return request<PassengerSearchResponse>('/api/search' + searchParams, {
+    signal,
+  });
 }
 
 export function predictEta(

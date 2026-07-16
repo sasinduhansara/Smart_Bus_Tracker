@@ -1,4 +1,4 @@
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pymongo.errors import PyMongoError
 
@@ -30,6 +30,23 @@ class RouteSummary(TypedDict):
     name: str
     direction: str
     stopCount: int
+
+
+class PassengerSearchResultBase(TypedDict):
+    id: str
+    type: Literal["route", "stop"]
+    title: str
+    subtitle: str
+    routeNumber: str
+
+
+class PassengerSearchResult(PassengerSearchResultBase, total=False):
+    stopId: str
+
+
+DEFAULT_SEARCH_LIMIT = 8
+MAX_SEARCH_LIMIT = 25
+MAX_SEARCH_QUERY_LENGTH = 80
 
 
 def _parse_float(value: Any, minimum: float, maximum: float) -> float | None:
@@ -205,3 +222,74 @@ def route_to_summary(route: RouteDetails) -> RouteSummary:
         "direction": route["direction"],
         "stopCount": len(route["stops"]),
     }
+
+
+def search_routes_and_stops(
+    query: str,
+    limit: int = DEFAULT_SEARCH_LIMIT,
+) -> list[PassengerSearchResult]:
+    normalized_query = query.strip().casefold()
+
+    if not normalized_query or limit <= 0:
+        return []
+
+    result_limit = min(limit, MAX_SEARCH_LIMIT)
+    routes = get_all_routes()
+    results: list[PassengerSearchResult] = []
+    result_ids: set[str] = set()
+
+    for route in routes:
+        searchable_route = " ".join((
+            route["routeNumber"],
+            route["name"],
+            route["direction"],
+        )).casefold()
+
+        if normalized_query not in searchable_route:
+            continue
+
+        result_id = f'route:{route["routeNumber"]}'
+
+        if result_id in result_ids:
+            continue
+
+        results.append({
+            "id": result_id,
+            "type": "route",
+            "title": f'Route {route["routeNumber"]}',
+            "subtitle": route["name"],
+            "routeNumber": route["routeNumber"],
+        })
+        result_ids.add(result_id)
+
+        if len(results) == result_limit:
+            return results
+
+    for route in routes:
+        for stop in route["stops"]:
+            if normalized_query not in stop["name"].casefold():
+                continue
+
+            result_id = (
+                f'stop:{route["routeNumber"]}:{stop["id"]}'
+            )
+
+            if result_id in result_ids:
+                continue
+
+            results.append({
+                "id": result_id,
+                "type": "stop",
+                "title": stop["name"],
+                "subtitle": (
+                    f'Route {route["routeNumber"]} · {route["name"]}'
+                ),
+                "routeNumber": route["routeNumber"],
+                "stopId": stop["id"],
+            })
+            result_ids.add(result_id)
+
+            if len(results) == result_limit:
+                return results
+
+    return results

@@ -45,6 +45,7 @@ import {
   getBusStatus,
   getDistanceKm,
 } from '../utils/busStatus';
+import { passengerColors } from '../theme/tokens';
 
 const DEFAULT_REGION = {
   latitude: 7.4863,
@@ -57,21 +58,27 @@ const ETA_REFRESH_MS = 20000;
 const ETA_MOVEMENT_THRESHOLD_KM = 0.05;
 
 const COLORS = {
-  primary: '#075985',
-  primaryDark: '#0f3f5f',
-  accent: '#f59e0b',
-  green: '#16a34a',
-  amber: '#d97706',
-  red: '#dc2626',
-  blue: '#2563eb',
-  background: '#eef4f8',
-  card: '#ffffff',
-  border: '#d9e2ea',
-  text: '#102030',
-  muted: '#64748b',
-  subtle: '#f8fafc',
-  white: '#ffffff',
+  primary: passengerColors.primary,
+  primaryDark: passengerColors.primaryDark,
+  accent: passengerColors.secondary,
+  green: passengerColors.success,
+  amber: passengerColors.warning,
+  red: passengerColors.error,
+  blue: passengerColors.secondary,
+  background: passengerColors.background,
+  card: passengerColors.surfaceRaised,
+  border: passengerColors.border,
+  text: passengerColors.text,
+  muted: passengerColors.textMuted,
+  subtle: passengerColors.surface,
+  white: passengerColors.white,
 };
+
+interface LiveMapScreenProps {
+  initialBusId?: string;
+  initialRouteNumber?: string;
+  initialStopId?: string;
+}
 
 function getMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim()) {
@@ -139,7 +146,11 @@ function socketStatusColor(status: SocketConnectionStatus): string {
   }
 }
 
-function LiveMapScreen(): React.JSX.Element {
+function LiveMapScreen({
+  initialBusId,
+  initialRouteNumber,
+  initialStopId,
+}: LiveMapScreenProps): React.JSX.Element {
   const mapRef = useRef<MapView | null>(null);
   const etaRequestInFlightRef = useRef(false);
   const lastEtaRequestAtRef = useRef(0);
@@ -149,10 +160,14 @@ function LiveMapScreen(): React.JSX.Element {
   const [routes, setRoutes] = useState<RouteSummary[]>([]);
   const [routeDetails, setRouteDetails] = useState<RouteDetails | null>(null);
   const [selectedRouteNumber, setSelectedRouteNumber] = useState<string | null>(
-    null,
+    initialRouteNumber || null,
   );
-  const [selectedBusId, setSelectedBusId] = useState<string | null>(null);
-  const [selectedStopId, setSelectedStopId] = useState<string | null>(null);
+  const [selectedBusId, setSelectedBusId] = useState<string | null>(
+    initialBusId || null,
+  );
+  const [selectedStopId, setSelectedStopId] = useState<string | null>(
+    initialStopId || null,
+  );
   const [userLocation, setUserLocation] = useState<LatLng | null>(null);
   const [socketStatus, setSocketStatus] =
     useState<SocketConnectionStatus>('disconnected');
@@ -642,7 +657,12 @@ function LiveMapScreen(): React.JSX.Element {
     const selectedBusStatus = getBusStatus(selectedBus, now);
 
     return (
-      <View style={styles.bottomCard}>
+      <ScrollView
+        style={styles.bottomCard}
+        contentContainerStyle={styles.bottomCardScrollContent}
+        showsVerticalScrollIndicator={false}
+        nestedScrollEnabled
+      >
         <View style={styles.cardHeaderRow}>
           <View>
             <Text style={styles.cardEyebrow}>Selected bus</Text>
@@ -781,12 +801,15 @@ function LiveMapScreen(): React.JSX.Element {
             </TouchableOpacity>
           </View>
         )}
-      </View>
+      </ScrollView>
     );
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView
+      style={styles.container}
+      edges={['top', 'left', 'right']}
+    >
       <MapView
         ref={mapRef}
         provider={PROVIDER_GOOGLE}
@@ -1041,6 +1064,7 @@ const styles = StyleSheet.create({
     left: 12,
     right: 12,
     bottom: 18,
+    maxHeight: '62%',
     backgroundColor: COLORS.card,
     borderRadius: 8,
     padding: 14,
@@ -1049,6 +1073,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.18,
     shadowRadius: 14,
     elevation: 6,
+  },
+  bottomCardScrollContent: {
+    paddingBottom: 2,
   },
   cardHeaderRow: {
     flexDirection: 'row',
@@ -1147,10 +1174,10 @@ const styles = StyleSheet.create({
   },
   etaCard: {
     marginTop: 14,
-    backgroundColor: '#f0f7ff',
+    backgroundColor: passengerColors.primarySoft,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#cfe4ff',
+    borderColor: passengerColors.border,
     padding: 12,
   },
   etaTitle: {
