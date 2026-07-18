@@ -77,7 +77,7 @@ export function buildNearbyBuses(
   const routeNames = new Map(
     routes.map(route => [route.routeNumber, route.name]),
   );
-  const statusOrder = { live: 0, stale: 1, offline: 2 } as const;
+  const statusOrder = { live: 0, paused: 1, stale: 2, offline: 3 } as const;
 
   return buses
     .map(bus => {
@@ -105,18 +105,18 @@ export function buildNearbyBuses(
       };
     })
     .sort((first, second) => {
-      if (
-        typeof first.distanceKm === 'number' &&
-        typeof second.distanceKm === 'number'
-      ) {
-        return first.distanceKm - second.distanceKm;
-      }
-
       const statusDifference =
         statusOrder[first.status] - statusOrder[second.status];
 
       if (statusDifference !== 0) {
         return statusDifference;
+      }
+
+      if (
+        typeof first.distanceKm === 'number' &&
+        typeof second.distanceKm === 'number'
+      ) {
+        return first.distanceKm - second.distanceKm;
       }
 
       const firstUpdatedAt = new Date(first.bus.updatedAt || 0).getTime() || 0;

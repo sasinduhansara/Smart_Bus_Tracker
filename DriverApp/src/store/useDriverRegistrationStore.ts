@@ -7,6 +7,7 @@ import type {
   RegistrationDocumentKey,
   UploadedDocumentRef,
 } from '../types/registration';
+import { normalizeMobile } from '../utils/validation';
 
 const INITIAL_FORM: DriverRegistrationForm = {
   fullName: '',
@@ -92,19 +93,21 @@ export const useDriverRegistrationStore = create<DriverRegistrationStore>(
       const form = get().form;
 
       return {
-        fullName: form.fullName,
-        nic: form.nic,
-        mobile: form.mobile,
-        email: form.email,
+        fullName: form.fullName.trim(),
+        nic: form.nic.trim().toUpperCase(),
+        mobile: normalizeMobile(form.mobile),
+        email: form.email.trim().toLowerCase(),
         password: form.password,
-        conductorName: form.conductorName,
-        driverNtcRegistrationNumber: form.driverNtcRegistrationNumber,
-        busNtcPermitNumber: form.busNtcPermitNumber,
-        drivingLicenseNumber: form.drivingLicenseNumber,
+        conductorName: form.conductorName.trim(),
+        driverNtcRegistrationNumber: form.driverNtcRegistrationNumber.trim(),
+        busNtcPermitNumber: form.busNtcPermitNumber.trim(),
+        drivingLicenseNumber: form.drivingLicenseNumber.trim(),
         drivingLicenseExpiry: form.drivingLicenseExpiry,
-        busRouteNumber: form.busRouteNumber,
-        vehicleRegistrationNumber: form.vehicleRegistrationNumber,
-        depotOperator: form.depotOperator,
+        busRouteNumber: form.busRouteNumber.trim(),
+        vehicleRegistrationNumber: form.vehicleRegistrationNumber
+          .trim()
+          .toUpperCase(),
+        depotOperator: form.depotOperator.trim(),
         documents: {
           nicFront: toUploadedDocumentRef(form.nicFront),
           nicBack: toUploadedDocumentRef(form.nicBack),

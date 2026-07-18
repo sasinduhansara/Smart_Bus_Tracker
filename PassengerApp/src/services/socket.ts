@@ -1,20 +1,29 @@
 import { io, type Socket } from 'socket.io-client';
 
-import { normalizeBusLocation } from './api';
+import { normalizeBusLocationUpdate } from './api';
 import { BASE_URL } from './config';
-import type { BusLocation, SocketConnectionStatus } from '../types';
+import type { BusLocationUpdate, SocketConnectionStatus } from '../types';
 
-type BusListener = (bus: BusLocation) => void;
+type BusListener = (bus: BusLocationUpdate) => void;
 type StatusListener = (status: SocketConnectionStatus) => void;
 
-class PassengerSocketService {
+export class PassengerSocketService {
   private socket: Socket | null = null;
   private status: SocketConnectionStatus = 'disconnected';
   private busListeners = new Set<BusListener>();
   private statusListeners = new Set<StatusListener>();
   private lastErrorMessage: string | null = null;
+  private ownerCount = 0;
+  private releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
   connect() {
+    this.ownerCount += 1;
+
+    if (this.releaseTimer) {
+      clearTimeout(this.releaseTimer);
+      this.releaseTimer = null;
+    }
+
     if (this.socket?.connected) {
       this.setStatus('connected');
       return;
@@ -34,20 +43,30 @@ class PassengerSocketService {
       this.bindCoreListeners(this.socket);
     }
 
+    if (this.status === 'connecting' || this.status === 'reconnecting') {
+      return;
+    }
+
     this.setStatus('connecting');
     this.socket.connect();
   }
 
   disconnect() {
-    if (!this.socket) {
-      this.setStatus('disconnected');
+    this.ownerCount = Math.max(0, this.ownerCount - 1);
+
+    if (this.ownerCount > 0 || this.releaseTimer) {
       return;
     }
 
-    this.socket.disconnect();
-    this.socket.removeAllListeners();
-    this.socket = null;
-    this.setStatus('disconnected');
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null;
+
+      if (this.ownerCount > 0) {
+        return;
+      }
+
+      this.releaseSocket();
+    }, 0);
   }
 
   onBusLocationUpdate(listener: BusListener) {
@@ -70,6 +89,7 @@ class PassengerSocketService {
   private bindCoreListeners(socket: Socket) {
     socket.on('connect', () => {
       console.log('[PassengerSocket] connected');
+      this.lastErrorMessage = null;
       this.setStatus('connected');
     });
 
@@ -101,7 +121,7 @@ class PassengerSocketService {
     });
 
     socket.on('bus_location_update', payload => {
-      const bus = normalizeBusLocation(payload);
+      const bus = normalizeBusLocationUpdate(payload);
 
       if (!bus) {
         console.log('[PassengerSocket] ignored invalid bus update');
@@ -110,6 +130,19 @@ class PassengerSocketService {
 
       this.busListeners.forEach(listener => listener(bus));
     });
+  }
+
+  private releaseSocket() {
+    if (!this.socket) {
+      this.setStatus('disconnected');
+      return;
+    }
+
+    this.socket.disconnect();
+    this.socket.removeAllListeners();
+    this.socket.io.removeAllListeners();
+    this.socket = null;
+    this.setStatus('disconnected');
   }
 
   private setStatus(status: SocketConnectionStatus) {

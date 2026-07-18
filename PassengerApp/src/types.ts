@@ -3,18 +3,31 @@ export interface CoordinatePoint {
   longitude: number;
 }
 
-export interface BusLocation {
+export type BusOperationalStatus = 'active' | 'paused' | 'offline';
+
+export interface BusLocationUpdate {
   bus_id: string;
   vehicleRegistrationNumber?: string;
   routeNumber?: string;
-  lat: number;
-  lng: number;
+  lat?: number;
+  lng?: number;
   speed?: number;
   heading?: number;
+  accuracy?: number;
   updatedAt?: string;
+  statusUpdatedAt?: string;
+  tripId?: string;
+  activeTripId?: string;
+  isActive?: boolean;
+  operationalStatus?: BusOperationalStatus;
 }
 
-export type BusLiveStatus = 'live' | 'stale' | 'offline';
+export interface BusLocation extends BusLocationUpdate {
+  lat: number;
+  lng: number;
+}
+
+export type BusLiveStatus = 'live' | 'paused' | 'stale' | 'offline';
 
 export interface RouteSummary {
   routeNumber: string;
@@ -122,8 +135,11 @@ export interface NearbyBus {
   routeName?: string;
   destinationName?: string;
   nextStop?: BusStop;
+  nextStopIsCanonical?: boolean;
   distanceKm?: number;
   status: BusLiveStatus;
   eta?: EtaPredictionResponse;
+  etaUpdatedAt?: number;
+  etaIsStale?: boolean;
   etaLoading: boolean;
 }

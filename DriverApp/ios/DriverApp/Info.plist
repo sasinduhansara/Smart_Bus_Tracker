@@ -51,6 +51,12 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Gamana.lk Driver uses your location during an active trip so passengers can view the bus location live.</string>
 
+	<key>NSCameraUsageDescription</key>
+	<string>Gamana.lk Driver uses the camera only when you capture an identity document for verification.</string>
+
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Gamana.lk Driver accesses your photo library only when you choose an identity document for verification.</string>
+
 	<key>RCTNewArchEnabled</key>
 	<true/>
 

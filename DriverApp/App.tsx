@@ -21,11 +21,19 @@ import DriverHomeScreen from './src/screens/DriverHomeScreen';
 import PendingApprovalScreen from './src/screens/PendingApprovalScreen';
 import TripsScreen from './src/screens/TripsScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
+import NotificationsScreen from './src/screens/NotificationsScreen';
+import RouteDetailsScreen from './src/screens/RouteDetailsScreen';
 
 import { useAuthStore } from './src/store/useAuthStore';
+import { configureUnauthorizedHandler } from './src/services/api';
 import type {
   RootStackParamList,
 } from './src/types/navigation';
+import {
+  getDriverNavigationKey,
+  getInitialDriverRoute,
+} from './src/navigation/authRouting';
+import { driverColors } from './src/theme/tokens';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -35,40 +43,40 @@ function App(): React.JSX.Element {
   const isHydrated = useAuthStore(state => state.isHydrated);
 
   const hydrateSession = useAuthStore(state => state.hydrateSession);
+  const logout = useAuthStore(state => state.logout);
 
   useEffect(() => {
     hydrateSession();
   }, [hydrateSession]);
 
+  useEffect(() => {
+    configureUnauthorizedHandler(logout);
+
+    return () => configureUnauthorizedHandler(null);
+  }, [logout]);
+
   if (!isHydrated) {
     return (
       <SafeAreaProvider>
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0066cc" />
+          <ActivityIndicator size="large" color={driverColors.teal100} />
         </View>
       </SafeAreaProvider>
     );
   }
 
-  const verificationStatus = session?.driver.verificationStatus;
-
-  const initialRouteName: keyof RootStackParamList =
-    !session
-      ? 'Login'
-      : verificationStatus === 'approved' ||
-          verificationStatus === 'verified'
-        ? 'DriverHome'
-        : 'PendingApproval';
+  const initialRouteName = getInitialDriverRoute(session);
 
   const initialDriverParams = session
     ? {
         driver: session.driver,
       }
     : undefined;
+  const navigationKey = getDriverNavigationKey(session);
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer>
+      <NavigationContainer key={navigationKey}>
         <Stack.Navigator
           initialRouteName={initialRouteName}
           screenOptions={{
@@ -96,6 +104,13 @@ function App(): React.JSX.Element {
           <Stack.Screen name="Trips" component={TripsScreen} />
 
           <Stack.Screen name="Profile" component={ProfileScreen} />
+
+          <Stack.Screen name="RouteDetails" component={RouteDetailsScreen} />
+
+          <Stack.Screen
+            name="Notifications"
+            component={NotificationsScreen}
+          />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>
@@ -107,7 +122,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
+    backgroundColor: driverColors.navy900,
   },
 });
 

@@ -2,23 +2,24 @@ import os
 
 from flask import Flask, jsonify
 from flask_cors import CORS
-from flask_socketio import SocketIO
 from pymongo.errors import PyMongoError
 from werkzeug.exceptions import HTTPException
 
 from config import client
+from extensions import socketio
 from routes.admin_routes import admin_bp
 from routes.auth_routes import auth_bp
 from routes.bus_routes import bus_bp
 from routes.document_routes import document_bp
 from routes.eta_routes import eta_bp
 from routes.route_routes import route_bp
+from routes.trip_routes import trip_bp
 
 
 def get_allowed_origins():
     configured_origins = os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:8081",
+        "http://localhost:3000,http://localhost:8081,http://localhost:8082",
     ).strip()
 
     if configured_origins == "*":
@@ -54,7 +55,7 @@ CORS(
     },
 )
 
-socketio = SocketIO(
+socketio.init_app(
     app,
     cors_allowed_origins=allowed_origins,
     async_mode="threading",
@@ -67,6 +68,7 @@ app.register_blueprint(route_bp)
 app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(document_bp)
+app.register_blueprint(trip_bp)
 
 
 @app.errorhandler(PyMongoError)

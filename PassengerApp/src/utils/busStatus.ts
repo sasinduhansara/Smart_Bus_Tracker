@@ -4,6 +4,14 @@ export function getBusStatus(
   bus: BusLocation,
   now: number,
 ): BusLiveStatus {
+  if (bus.operationalStatus === 'paused') {
+    return 'paused';
+  }
+
+  if (bus.operationalStatus === 'offline' || bus.isActive === false) {
+    return 'offline';
+  }
+
   if (!bus.updatedAt) {
     return 'offline';
   }
@@ -15,6 +23,10 @@ export function getBusStatus(
   }
 
   const ageSeconds = (now - updatedAt) / 1000;
+
+  if (ageSeconds < -30) {
+    return 'offline';
+  }
 
   if (ageSeconds <= 30) {
     return 'live';

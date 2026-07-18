@@ -1,27 +1,22 @@
 import React from 'react';
-import {
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
-
-const COLORS = {
-  navActive: '#F59E0B',
-  navInactive: '#CBD5E1',
-  white: '#FFFFFF',
-  borderLight: 'rgba(255, 255, 255, 0.14)',
-  primaryDark: '#07111F',
-  navSurface: '#0F172A',
-};
+import {
+  driverColors,
+  driverRadii,
+  driverShadows,
+  driverSizes,
+  driverSpacing,
+  driverTypography,
+} from '../theme/tokens';
 
 export interface TabConfig {
   key: string;
   label: string;
   icon: string;
   activeIcon?: string;
+  accessibilityLabel?: string;
 }
 
 export const DEFAULT_TABS: TabConfig[] = [
@@ -36,7 +31,7 @@ export const DEFAULT_TABS: TabConfig[] = [
   },
 ];
 
-interface BottomNavProps {
+export interface BottomNavProps {
   tabs?: TabConfig[];
   activeTab: string;
   onTabPress: (tabKey: string) => void;
@@ -59,21 +54,27 @@ const BottomNav: React.FC<BottomNavProps> = ({
         const isActive = tab.key === activeTab;
 
         return (
-          <TouchableOpacity
+          <Pressable
             key={tab.key}
-            style={[styles.navItem, isActive && styles.navItemActive]}
+            accessibilityRole="tab"
+            accessibilityLabel={tab.accessibilityLabel || `${tab.label} tab`}
+            accessibilityState={{ selected: isActive }}
             onPress={() => onTabPress(tab.key)}
-            activeOpacity={0.85}
+            style={({ pressed }) => [
+              styles.navItem,
+              isActive && styles.navItemActive,
+              pressed && styles.navItemPressed,
+            ]}
           >
             <Icon
               name={isActive ? tab.activeIcon || tab.icon : tab.icon}
-              size={22}
-              color={isActive ? COLORS.white : COLORS.navInactive}
+              size={driverSizes.iconMedium}
+              color={isActive ? driverColors.navy950 : driverColors.border}
             />
             <Text style={[styles.navLabel, isActive && styles.navLabelActive]}>
               {tab.label}
             </Text>
-          </TouchableOpacity>
+          </Pressable>
         );
       })}
     </View>
@@ -85,45 +86,45 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 16,
     right: 16,
-    minHeight: 72,
-    backgroundColor: COLORS.navSurface,
+    minHeight: driverSizes.bottomNavHeight,
+    backgroundColor: driverColors.navy900,
     borderWidth: 1,
-    borderColor: COLORS.borderLight,
-    borderRadius: 32,
+    borderColor: driverColors.navy700,
+    borderRadius: driverRadii.feature,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    shadowColor: COLORS.primaryDark,
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.32,
-    shadowRadius: 22,
-    elevation: 12,
+    paddingHorizontal: driverSpacing.xs,
+    paddingVertical: driverSpacing.xs,
+    ...driverShadows.floating,
   },
   navItem: {
     flex: 1,
+    minWidth: driverSizes.minimumTouchTarget,
     height: 56,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    borderRadius: 24,
+    gap: driverSpacing.xxs,
+    borderRadius: driverRadii.card,
   },
   navItemActive: {
-    backgroundColor: COLORS.navActive,
-    shadowColor: COLORS.navActive,
+    backgroundColor: driverColors.amber500,
+    shadowColor: driverColors.amber500,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.22,
     shadowRadius: 10,
     elevation: 6,
   },
+  navItemPressed: {
+    opacity: 0.72,
+  },
   navLabel: {
     fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.navInactive,
+    fontWeight: driverTypography.weights.bold,
+    color: driverColors.border,
   },
   navLabelActive: {
-    color: COLORS.white,
+    color: driverColors.navy950,
   },
 });
 

@@ -251,6 +251,40 @@ describe('App', () => {
     ).not.toHaveLength(0);
   });
 
+  test('merges a status-only pause event into the last bus location', async () => {
+    await AsyncStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
+    const locationUpdatedAt = new Date().toISOString();
+    mockedGetBuses.mockResolvedValue([
+      {
+        bus_id: 'bus-paused',
+        routeNumber: '138',
+        lat: 6.9271,
+        lng: 79.8612,
+        updatedAt: locationUpdatedAt,
+        operationalStatus: 'active',
+        isActive: true,
+      },
+    ]);
+
+    const app = await renderApp();
+    const listener =
+      mockedPassengerSocket.onBusLocationUpdate.mock.calls[0]?.[0];
+
+    await ReactTestRenderer.act(async () => {
+      listener?.({
+        bus_id: 'bus-paused',
+        operationalStatus: 'paused',
+        isActive: false,
+        statusUpdatedAt: new Date(Date.now() + 1000).toISOString(),
+      });
+      await Promise.resolve();
+    });
+
+    expect(
+      app.root.findAll(instance => instance.props.children === 'Trip paused'),
+    ).not.toHaveLength(0);
+  });
+
   test('requests and announces a model-backed ETA for a live bus', async () => {
     await AsyncStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
     mockedGetBuses.mockResolvedValue([

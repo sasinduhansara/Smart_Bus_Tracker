@@ -293,8 +293,6 @@ def _build_model_features(
 def build_eta_prediction(
     request_data: dict[str, Any],
 ) -> dict[str, Any]:
-    _validate_model()
-
     bus_id = str(request_data.get("busId") or "").strip()
     requested_route_number = str(
         request_data.get("routeNumber") or "",
@@ -308,6 +306,8 @@ def build_eta_prediction(
             "busId and destinationStopId are required.",
             400,
         )
+
+    _validate_model()
 
     bus = buses_collection.find_one(
         {
@@ -323,6 +323,8 @@ def build_eta_prediction(
             "speed": 1,
             "heading": 1,
             "updatedAt": 1,
+            "operationalStatus": 1,
+            "isActive": 1,
         },
     )
 
@@ -330,6 +332,18 @@ def build_eta_prediction(
         raise EtaPredictionError(
             "Bus was not found.",
             404,
+        )
+
+    operational_status = str(
+        bus.get("operationalStatus") or ""
+    ).strip().lower()
+    if (
+        operational_status
+        and operational_status != "active"
+    ) or bus.get("isActive") is False:
+        raise EtaPredictionError(
+            "The selected bus is not running an active trip.",
+            409,
         )
 
     bus_route_number = str(bus.get("routeNumber") or "").strip()
@@ -394,6 +408,12 @@ def build_eta_prediction(
     if age_seconds > 120:
         raise EtaPredictionError(
             "The selected bus is offline. Wait for a fresh GPS update.",
+            409,
+        )
+
+    if age_seconds < -30:
+        raise EtaPredictionError(
+            "The selected bus location timestamp is in the future.",
             409,
         )
 

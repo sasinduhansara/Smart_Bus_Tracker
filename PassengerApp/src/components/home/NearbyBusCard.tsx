@@ -42,6 +42,8 @@ function statusDetails(status: NearbyBus['status']): {
   switch (status) {
     case 'live':
       return { label: 'Live', color: passengerColors.success };
+    case 'paused':
+      return { label: 'Trip paused', color: passengerColors.warning };
     case 'stale':
       return { label: 'Signal delayed', color: passengerColors.warning };
     default:
@@ -59,12 +61,21 @@ function NearbyBusCard({
   const routeLabel = item.bus.routeNumber
     ? 'Route ' + item.bus.routeNumber
     : 'Route not assigned';
-  const etaLabel = item.eta
-    ? item.eta.etaMinutes < 1
-      ? 'Due'
-      : Math.ceil(item.eta.etaMinutes) + ' min'
-    : item.status === 'offline'
+  const etaLabel =
+    item.status === 'offline'
     ? 'Offline'
+    : item.status === 'paused'
+    ? 'Paused'
+    : item.status === 'stale'
+    ? 'Delayed'
+    : item.eta
+    ? item.eta.etaMinutes < 1
+      ? item.etaIsStale
+        ? 'Last due'
+        : 'Due'
+      : (item.etaIsStale ? 'Last ~' : '') +
+        Math.ceil(item.eta.etaMinutes) +
+        ' min'
     : 'Unavailable';
 
   return (
@@ -128,7 +139,9 @@ function NearbyBusCard({
             />
           </View>
           <View style={styles.stopCopy}>
-            <Text style={styles.detailLabel}>NEXT STOP</Text>
+            <Text style={styles.detailLabel}>
+              {item.nextStopIsCanonical ? 'NEXT STOP' : 'ETA DESTINATION'}
+            </Text>
             <Text style={styles.stopName} numberOfLines={2}>
               {item.nextStop?.name || 'Stop information unavailable'}
             </Text>
@@ -159,9 +172,20 @@ function NearbyBusCard({
             </Text>
           )}
           {item.eta && (
-            <Text style={styles.etaDistance} numberOfLines={1}>
-              {item.eta.remainingDistanceKm.toFixed(1)} km to stop
-            </Text>
+            <>
+              <Text style={styles.etaDistance} numberOfLines={1}>
+                {item.etaIsStale ? 'Last estimate · ' : ''}
+                {item.eta.remainingDistanceKm.toFixed(1)} km to stop
+              </Text>
+              {item.etaUpdatedAt && (
+                <Text style={styles.etaUpdated} numberOfLines={1}>
+                  {formatRelativeTime(
+                    new Date(item.etaUpdatedAt).toISOString(),
+                    now,
+                  )}
+                </Text>
+              )}
+            </>
           )}
         </View>
       </View>
@@ -327,6 +351,12 @@ const styles = StyleSheet.create({
     color: passengerColors.textMuted,
     fontSize: 9,
     fontWeight: '700',
+    marginTop: 2,
+  },
+  etaUpdated: {
+    color: passengerColors.textSubtle,
+    fontSize: 8,
+    fontWeight: '600',
     marginTop: 2,
   },
   etaLoader: {

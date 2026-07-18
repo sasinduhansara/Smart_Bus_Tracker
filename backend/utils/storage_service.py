@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import uuid
+from urllib.parse import quote
 
 from storage3 import create_client
 
@@ -7,6 +10,7 @@ from config import (
     SUPABASE_SERVICE_KEY,
     SUPABASE_URL,
 )
+from utils.auth_utils import get_jwt_secret
 
 
 STORAGE_BUCKET = str(
@@ -95,7 +99,7 @@ def get_storage():
 
 def build_safe_folder(driver_mobile: str) -> str:
     """
-    Keep only letters and numbers in the storage folder name.
+    Build a stable opaque folder without exposing a driver's mobile number.
     """
 
     safe_mobile = "".join(
@@ -104,7 +108,16 @@ def build_safe_folder(driver_mobile: str) -> str:
         if character.isalnum()
     )
 
-    return safe_mobile or "unknown-driver"
+    if not safe_mobile:
+        raise ValueError("A driver mobile number is required")
+
+    folder_digest = hmac.new(
+        get_jwt_secret().encode("utf-8"),
+        safe_mobile.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:24]
+
+    return f"driver-{folder_digest}"
 
 
 def get_extension(
@@ -132,6 +145,19 @@ def get_extension(
         )
 
     return "jpg"
+
+
+def build_public_document_url(file_name: str) -> str:
+    normalized_file_name = str(file_name or "").strip().lstrip("/")
+    if not normalized_file_name:
+        raise ValueError("Storage file name is required")
+
+    validate_storage_config()
+    storage_api_url = get_storage_url().rstrip("/")
+    bucket = quote(STORAGE_BUCKET, safe="")
+    encoded_path = quote(normalized_file_name, safe="/")
+
+    return f"{storage_api_url}/object/public/{bucket}/{encoded_path}"
 
 
 def upload_document(
@@ -174,11 +200,7 @@ def upload_document(
         },
     )
 
-    public_url = (
-        storage
-        .from_(STORAGE_BUCKET)
-        .get_public_url(unique_name)
-    )
+    public_url = build_public_document_url(unique_name)
 
     return {
         "fileName": unique_name,

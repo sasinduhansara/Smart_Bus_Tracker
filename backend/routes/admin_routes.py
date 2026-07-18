@@ -3,9 +3,15 @@ from datetime import datetime, timezone
 
 import bcrypt
 from bson.objectid import ObjectId
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request
 
-from config import drivers_collection
+from config import buses_collection, drivers_collection, trips_collection
+from extensions import socketio
+from services.driver_trip_service import (
+    OPEN_TRIP_STATUSES,
+    build_safe_bus_payload,
+    driver_reference_query,
+)
 from utils.auth_utils import (
     create_access_token,
     jwt_required,
@@ -14,6 +20,24 @@ from utils.auth_utils import (
 
 
 admin_bp = Blueprint("admin_bp", __name__)
+
+REQUIRED_DOCUMENT_TYPES = {
+    "nicFront",
+    "nicBack",
+    "drivingLicenseFront",
+    "drivingLicenseBack",
+}
+
+
+def has_all_required_documents(driver):
+    documents = driver.get("documents") or {}
+
+    return all(
+        isinstance(documents.get(document_type), dict)
+        and documents[document_type].get("fileName")
+        and documents[document_type].get("url")
+        for document_type in REQUIRED_DOCUMENT_TYPES
+    )
 
 
 def serialize_admin_driver(driver):
@@ -73,6 +97,7 @@ def serialize_admin_driver(driver):
             "kycStatus",
             "NOT_SUBMITTED",
         ),
+        "kycRevision": driver.get("kycRevision", 0),
         "documents": driver.get("documents", {}),
         "createdAt": created_at or "",
         "updatedAt": updated_at or "",
@@ -84,6 +109,93 @@ def get_driver_object_id(driver_id):
         return None
 
     return ObjectId(driver_id)
+
+
+def suspend_driver_trip(driver_id, now):
+    """Best-effort immediate passenger truth after an admin blocks/rejects."""
+
+    trip = trips_collection.find_one(
+        {
+            **driver_reference_query(driver_id),
+            "status": {"$in": list(OPEN_TRIP_STATUSES)},
+        },
+        sort=[("startedAt", -1), ("createdAt", -1)],
+    )
+    if not trip:
+        return
+
+    if trip.get("status") == "active":
+        transition_result = trips_collection.update_one(
+            {"_id": trip["_id"], "status": "active"},
+            {
+                "$set": {
+                    "status": "paused",
+                    "pausedAt": now,
+                    "updatedAt": now,
+                },
+            },
+        )
+        if transition_result.modified_count != 1:
+            return
+
+    bus_id = str(
+        trip.get("busId")
+        or trip.get("vehicleRegistrationNumber")
+        or ""
+    ).strip()
+    route_number = str(trip.get("routeNumber") or "").strip()
+    if not bus_id:
+        return
+
+    bus_result = buses_collection.update_one(
+        {
+            "$and": [
+                {
+                    "$or": [
+                        {"bus_id": bus_id},
+                        {"vehicleRegistrationNumber": bus_id},
+                    ],
+                },
+                {
+                    "$or": [
+                        {"statusUpdatedAt": {"$lte": now}},
+                        {"statusUpdatedAt": {"$exists": False}},
+                    ],
+                },
+            ],
+        },
+        {
+            "$set": {
+                "operationalStatus": "paused",
+                "isActive": False,
+                "statusUpdatedAt": now,
+            },
+        },
+    )
+    if bus_result.matched_count != 1:
+        return
+
+    socketio.emit(
+        "bus_location_update",
+        build_safe_bus_payload(
+            bus_id=bus_id,
+            route_number=route_number,
+            operational_status="paused",
+            trip_id=str(trip.get("_id") or "") or None,
+            status_updated_at=now,
+        ),
+    )
+
+
+def safely_suspend_driver_trip(driver_id, now):
+    try:
+        suspend_driver_trip(driver_id, now)
+    except Exception:
+        # Account authority is already revoked. GPS writes are rejected and
+        # public GET state also expires stale locations; log live-sync failure.
+        current_app.logger.exception(
+            "Could not immediately suspend the driver's open trip"
+        )
 
 
 @admin_bp.route("/api/admin/login", methods=["POST"])
@@ -198,13 +310,56 @@ def approve_driver(driver_id):
             "error": "Invalid driver id"
         }), 400
 
+    driver = drivers_collection.find_one({"_id": driver_object_id})
+    if not driver:
+        return jsonify({"error": "Driver not found"}), 404
+
+    if not has_all_required_documents(driver):
+        return jsonify({
+            "error": "All four required identity documents must be submitted before approval",
+            "requiredDocuments": sorted(REQUIRED_DOCUMENT_TYPES),
+            "kycStatus": driver.get("kycStatus", "NOT_SUBMITTED"),
+        }), 409
+
+    verification_status = str(
+        driver.get("verificationStatus", "pending")
+    ).strip().lower()
+    if verification_status == "blocked":
+        return jsonify({
+            "error": "A blocked driver must be explicitly unblocked before approval",
+        }), 409
+
     now = datetime.now(timezone.utc)
+    documents = driver.get("documents") or {}
+    raw_kyc_revision = driver.get("kycRevision")
+    revision_condition = (
+        {"kycRevision": raw_kyc_revision}
+        if "kycRevision" in driver
+        else {"kycRevision": {"$exists": False}}
+    )
+    status_condition = (
+        {"verificationStatus": driver.get("verificationStatus")}
+        if "verificationStatus" in driver
+        else {"verificationStatus": {"$exists": False}}
+    )
+    reviewed_document_conditions = [
+        {f"documents.{document_type}": documents[document_type]}
+        for document_type in REQUIRED_DOCUMENT_TYPES
+    ]
 
     result = drivers_collection.update_one(
-        {"_id": driver_object_id},
+        {
+            "_id": driver_object_id,
+            "$and": [
+                revision_condition,
+                status_condition,
+                *reviewed_document_conditions,
+            ],
+        },
         {
             "$set": {
                 "verificationStatus": "approved",
+                "kycStatus": "APPROVED",
                 "approvedAt": now,
                 "approvedBy": g.auth.get("sub", ""),
                 "updatedAt": now,
@@ -213,9 +368,16 @@ def approve_driver(driver_id):
     )
 
     if result.matched_count == 0:
-        return jsonify({
-            "error": "Driver not found"
-        }), 404
+        if drivers_collection.find_one(
+            {"_id": driver_object_id},
+            {"_id": 1},
+        ):
+            return jsonify({
+                "error": (
+                    "Driver documents changed during review; reload them before approval"
+                ),
+            }), 409
+        return jsonify({"error": "Driver not found"}), 404
 
     return jsonify({
         "status": "approved",
@@ -250,7 +412,8 @@ def block_driver(driver_id):
                 "blockedBy": g.auth.get("sub", ""),
                 "blockReason": reason,
                 "updatedAt": now,
-            }
+            },
+            "$inc": {"kycRevision": 1},
         },
     )
 
@@ -258,6 +421,8 @@ def block_driver(driver_id):
         return jsonify({
             "error": "Driver not found"
         }), 404
+
+    safely_suspend_driver_trip(driver_id, now)
 
     return jsonify({
         "status": "blocked",
@@ -295,11 +460,13 @@ def reject_driver(driver_id):
         {
             "$set": {
                 "verificationStatus": "rejected",
+                "kycStatus": "REJECTED",
                 "rejectedAt": now,
                 "rejectedBy": g.auth.get("sub", ""),
                 "rejectionReason": reason,
                 "updatedAt": now,
-            }
+            },
+            "$inc": {"kycRevision": 1},
         },
     )
 
@@ -307,6 +474,8 @@ def reject_driver(driver_id):
         return jsonify({
             "error": "Driver not found"
         }), 404
+
+    safely_suspend_driver_trip(driver_id, now)
 
     return jsonify({
         "status": "rejected",

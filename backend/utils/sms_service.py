@@ -1,6 +1,8 @@
 import requests
-import random
+import secrets
+
 from config import TEXTLK_API_TOKEN, TEXTLK_SENDER_ID
+
 
 def send_sms(mobile, message):
     """Sends an SMS using the text.lk Bearer token API."""
@@ -18,9 +20,22 @@ def send_sms(mobile, message):
     }
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
-        return response.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        response.raise_for_status()
+        response_payload = response.json()
+        provider_status = str(
+            response_payload.get("status", "")
+            if isinstance(response_payload, dict)
+            else ""
+        ).strip().lower()
+
+        if provider_status in {"error", "failed", "failure"}:
+            return {"ok": False}
+
+        return {"ok": True}
+    except (requests.RequestException, ValueError):
+        # Do not return provider internals or configuration details to clients.
+        return {"ok": False}
+
 
 def generate_otp():
-    return str(random.randint(100000, 999999))
+    return str(100000 + secrets.randbelow(900000))

@@ -1,11 +1,22 @@
 import { Platform } from 'react-native';
 
 import type {
+  ActiveTripResponse,
   DocumentUploadResponse,
   Driver,
+  DriverEtaResponse,
   DriverHomeResponse,
+  DriverIssueResponse,
+  DriverNotificationsResponse,
+  IssueCategory,
+  IssueSeverity,
+  LiveBusLocation,
   OTPResponse,
   RegistrationAvailabilityResponse,
+  RouteDetailsResponse,
+  TripHistoryResponse,
+  TripLocation,
+  TripMutationResponse,
   VerifyOTPResponse,
 } from '../types';
 
@@ -24,6 +35,9 @@ export interface DriverStatusResponse {
   mobile?: string;
   verificationStatus?: string;
   status?: string;
+  kycStatus?: string;
+  rejectionReason?: string;
+  blockReason?: string;
   [key: string]: unknown;
 }
 
@@ -32,17 +46,8 @@ export interface DriverLocationPayload {
   lng: number;
   speed?: number;
   heading?: number;
-}
-
-export interface LiveBusLocation {
-  bus_id: string;
-  vehicleRegistrationNumber?: string;
-  routeNumber?: string;
-  lat: number;
-  lng: number;
-  speed?: number;
-  heading?: number;
-  updatedAt?: string;
+  accuracy: number;
+  timestamp: string;
 }
 
 export interface DriverLocationResponse {
@@ -53,6 +58,30 @@ export interface DriverLocationResponse {
 interface ApiErrorResponse {
   error?: string;
   message?: string;
+  code?: string;
+}
+
+const REQUEST_TIMEOUT_MS = 15000;
+const routeRequestCache = new Map<string, Promise<RouteDetailsResponse>>();
+
+let unauthorizedHandler: (() => void | Promise<void>) | null = null;
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status = 0, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+export function configureUnauthorizedHandler(
+  handler: (() => void | Promise<void>) | null,
+): void {
+  unauthorizedHandler = handler;
 }
 
 const API_HOST = Platform.select({
@@ -85,18 +114,18 @@ function parseResponseBody(
   try {
     return JSON.parse(responseText);
   } catch {
-    const preview = responseText.trim().slice(0, 80);
-
-    throw new Error(
-      `Backend returned a non-JSON response (${status}) for ${url}. ` +
-        `Check whether Flask is running on ${BASE_URL}. ` +
-        `Response: ${preview}`,
+    throw new ApiError(
+      `The server returned an unreadable response for ${url}.`,
+      status,
+      'INVALID_RESPONSE',
     );
   }
 }
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const accessToken = await getAccessTokenAsync();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -110,30 +139,67 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
     Object.assign(headers, options.headers as Record<string, string>);
   }
 
-  const response = await fetch(`${BASE_URL}${url}`, {
-    ...options,
-    headers,
-  });
+  try {
+    const response = await fetch(`${BASE_URL}${url}`, {
+      ...options,
+      headers,
+      signal: options.signal || controller.signal,
+    });
 
-  const responseText = await response.text();
+    const responseText = await response.text();
+    const data = parseResponseBody(responseText, response.status, url);
 
-  const data = parseResponseBody(responseText, response.status, url);
+    if (!response.ok) {
+      if (response.status === 401 && accessToken) {
+        Promise.resolve(unauthorizedHandler?.()).catch(() => undefined);
+      }
 
-  if (!response.ok) {
-    throw new Error(
-      getErrorMessage(
-        data,
-        response.status === 401
-          ? 'Your login session has expired.'
-          : 'Something went wrong',
-      ),
+      const responseCode =
+        data && typeof data === 'object'
+          ? (data as ApiErrorResponse).code
+          : undefined;
+
+      throw new ApiError(
+        getErrorMessage(
+          data,
+          response.status === 401
+            ? 'Your login session has expired. Please sign in again.'
+            : 'The request could not be completed.',
+        ),
+        response.status,
+        responseCode,
+      );
+    }
+
+    return data as T;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new ApiError(
+        'The backend did not respond in time. Check your connection and retry.',
+        0,
+        'TIMEOUT',
+      );
+    }
+
+    throw new ApiError(
+      'Backend unavailable. Your session and current trip have been preserved.',
+      0,
+      'NETWORK_ERROR',
     );
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return data as T;
 }
 
-async function requestForm<T>(url: string, body: FormData): Promise<T> {
+async function requestForm<T>(
+  url: string,
+  body: FormData,
+  externalSignal?: AbortSignal,
+): Promise<T> {
   const accessToken = await getAccessTokenAsync();
 
   const headers: Record<string, string> = {};
@@ -142,28 +208,64 @@ async function requestForm<T>(url: string, body: FormData): Promise<T> {
     headers.Authorization = `Bearer ${accessToken}`;
   }
 
-  const response = await fetch(`${BASE_URL}${url}`, {
-    method: 'POST',
-    headers,
-    body,
-  });
-
-  const responseText = await response.text();
-
-  const data = parseResponseBody(responseText, response.status, url);
-
-  if (!response.ok) {
-    throw new Error(
-      getErrorMessage(
-        data,
-        response.status === 401
-          ? 'Your login session has expired.'
-          : 'Document upload failed',
-      ),
-    );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const abortFromExternalSignal = () => controller.abort();
+  externalSignal?.addEventListener('abort', abortFromExternalSignal);
+  if (externalSignal?.aborted) {
+    controller.abort();
   }
 
-  return data as T;
+  try {
+    const response = await fetch(`${BASE_URL}${url}`, {
+      method: 'POST',
+      headers,
+      body,
+      signal: controller.signal,
+    });
+
+    const responseText = await response.text();
+    const data = parseResponseBody(responseText, response.status, url);
+
+    if (!response.ok) {
+      if (response.status === 401 && accessToken) {
+        Promise.resolve(unauthorizedHandler?.()).catch(() => undefined);
+      }
+
+      throw new ApiError(
+        getErrorMessage(
+          data,
+          response.status === 401
+            ? 'Your login session has expired. Please sign in again.'
+            : 'Document upload failed.',
+        ),
+        response.status,
+      );
+    }
+
+    return data as T;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    if (error instanceof Error && error.name === 'AbortError') {
+      if (externalSignal?.aborted) {
+        throw new ApiError('Document upload cancelled.', 0, 'CANCELLED');
+      }
+
+      throw new ApiError('Document upload timed out. Please retry.', 0, 'TIMEOUT');
+    }
+
+    throw new ApiError(
+      'Document upload could not reach the backend. Please retry.',
+      0,
+      'NETWORK_ERROR',
+    );
+  } finally {
+    clearTimeout(timeout);
+    externalSignal?.removeEventListener('abort', abortFromExternalSignal);
+  }
 }
 
 function post<T>(url: string, body: unknown): Promise<T> {
@@ -171,6 +273,10 @@ function post<T>(url: string, body: unknown): Promise<T> {
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+function get<T>(url: string): Promise<T> {
+  return request<T>(url);
 }
 
 export function requestRegisterOTP(
@@ -183,6 +289,7 @@ export function checkDriverRegistrationAvailability(data: {
   mobile: string;
   email: string;
   nic: string;
+  vehicleRegistrationNumber?: string;
 }): Promise<RegistrationAvailabilityResponse> {
   return post<RegistrationAvailabilityResponse>(
     '/api/driver/register/check-availability',
@@ -194,6 +301,7 @@ export function uploadRegistrationDocument(data: {
   mobile: string;
   docType: RegistrationDocumentKey;
   file: DocumentFile;
+  signal?: AbortSignal;
 }): Promise<DocumentUploadResponse> {
   const formData = new FormData();
 
@@ -209,6 +317,7 @@ export function uploadRegistrationDocument(data: {
   return requestForm<DocumentUploadResponse>(
     '/api/driver/register/documents/upload',
     formData,
+    data.signal,
   );
 }
 
@@ -248,6 +357,16 @@ export function getDriverHome(driverId: string): Promise<DriverHomeResponse> {
   );
 }
 
+export function getDriverNotifications(
+  limit = 50,
+): Promise<DriverNotificationsResponse> {
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 100);
+
+  return get<DriverNotificationsResponse>(
+    `/api/driver/notifications?limit=${safeLimit}`,
+  );
+}
+
 export function getDriverStatus(
   driverId: string,
 ): Promise<DriverStatusResponse> {
@@ -266,6 +385,7 @@ export function uploadDriverDocument(data: {
   driverId: string;
   docType: RegistrationDocumentKey;
   file: DocumentFile;
+  signal?: AbortSignal;
 }): Promise<DocumentUploadResponse> {
   const formData = new FormData();
 
@@ -280,6 +400,7 @@ export function uploadDriverDocument(data: {
   return requestForm<DocumentUploadResponse>(
     `/api/driver/${encodeURIComponent(data.driverId)}/documents/upload`,
     formData,
+    data.signal,
   );
 }
 
@@ -287,4 +408,87 @@ export function sendDriverLocation(
   location: DriverLocationPayload,
 ): Promise<DriverLocationResponse> {
   return post<DriverLocationResponse>('/api/location', location);
+}
+
+export function getActiveTrip(): Promise<ActiveTripResponse> {
+  return get<ActiveTripResponse>('/api/driver/trips/active');
+}
+
+export function getTripHistory(limit = 30): Promise<TripHistoryResponse> {
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 50);
+
+  return get<TripHistoryResponse>(`/api/driver/trips?limit=${safeLimit}`);
+}
+
+export function startDriverTrip(): Promise<TripMutationResponse> {
+  return post<TripMutationResponse>('/api/driver/trips/start', {});
+}
+
+export function pauseDriverTrip(tripId: string): Promise<TripMutationResponse> {
+  return post<TripMutationResponse>(
+    `/api/driver/trips/${encodeURIComponent(tripId)}/pause`,
+    {},
+  );
+}
+
+export function resumeDriverTrip(
+  tripId: string,
+): Promise<TripMutationResponse> {
+  return post<TripMutationResponse>(
+    `/api/driver/trips/${encodeURIComponent(tripId)}/resume`,
+    {},
+  );
+}
+
+export function completeDriverTrip(
+  tripId: string,
+): Promise<TripMutationResponse> {
+  return post<TripMutationResponse>(
+    `/api/driver/trips/${encodeURIComponent(tripId)}/complete`,
+    {},
+  );
+}
+
+export function getAssignedRoute(
+  routeNumber: string,
+  forceRefresh = false,
+): Promise<RouteDetailsResponse> {
+  const normalizedRouteNumber = routeNumber.trim();
+
+  if (forceRefresh) {
+    routeRequestCache.delete(normalizedRouteNumber);
+  }
+
+  const cachedRequest = routeRequestCache.get(normalizedRouteNumber);
+
+  if (cachedRequest) {
+    return cachedRequest;
+  }
+
+  const routeRequest = get<RouteDetailsResponse>(
+    `/api/routes/${encodeURIComponent(normalizedRouteNumber)}`,
+  ).catch(error => {
+    routeRequestCache.delete(normalizedRouteNumber);
+    throw error;
+  });
+
+  routeRequestCache.set(normalizedRouteNumber, routeRequest);
+  return routeRequest;
+}
+
+export function predictDriverEta(data: {
+  busId: string;
+  routeNumber: string;
+  destinationStopId: string;
+}): Promise<DriverEtaResponse> {
+  return post<DriverEtaResponse>('/api/eta/predict', data);
+}
+
+export function reportDriverIssue(data: {
+  category: IssueCategory;
+  severity: IssueSeverity;
+  message?: string;
+  location?: TripLocation;
+}): Promise<DriverIssueResponse> {
+  return post<DriverIssueResponse>('/api/driver/issues', data);
 }

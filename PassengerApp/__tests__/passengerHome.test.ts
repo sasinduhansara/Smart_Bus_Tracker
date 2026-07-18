@@ -192,7 +192,7 @@ describe('passenger home utilities', () => {
       },
     ];
 
-    it('sorts by user distance while retaining status and route metadata', () => {
+    it('prioritizes live status before distance and retains route metadata', () => {
       const nearby = buildNearbyBuses(
         buses,
         routes,
@@ -202,24 +202,24 @@ describe('passenger home utilities', () => {
       );
 
       expect(nearby.map(item => item.bus.bus_id)).toEqual([
-        'closest-offline',
-        'near-stale',
         'far-live',
+        'near-stale',
+        'closest-offline',
       ]);
       expect(nearby.map(item => item.status)).toEqual([
-        'offline',
-        'stale',
         'live',
+        'stale',
+        'offline',
       ]);
       expect(nearby[1]).toMatchObject({
         routeName: 'Avissawella - Pettah',
         destinationName: 'Pettah',
         etaLoading: false,
       });
-      expect(nearby[2].distanceKm).toBeGreaterThan(nearby[1].distanceKm ?? 0);
-      expect(nearby[0].routeName).toBeUndefined();
-      expect(nearby[0].destinationName).toBeUndefined();
-      expect(nearby[0].nextStop).toBeUndefined();
+      expect(nearby[0].distanceKm).toBeGreaterThan(nearby[1].distanceKm ?? 0);
+      expect(nearby[2].routeName).toBeUndefined();
+      expect(nearby[2].destinationName).toBeUndefined();
+      expect(nearby[2].nextStop).toBeUndefined();
     });
 
     it('falls back to live status then update recency without a location', () => {

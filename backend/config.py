@@ -26,6 +26,7 @@ trips_collection = db["trips"]
 driver_shifts_collection = db["driver_shifts"]
 notifications_collection = db["notifications"]
 routes_collection = db["routes"]
+issue_reports_collection = db["issue_reports"]
 
 eta_model_load_error = None
 

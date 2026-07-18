@@ -131,17 +131,27 @@ function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
 
         return;
 
-      case 'blocked':
       case 'rejected':
+        if (purpose === 'register') {
+          resetRegistration();
+        }
+
+        {
+          const session = await establishSession({
+            ...data,
+            verificationStatus,
+          });
+
+          resetToDriverRoute('PendingApproval', session.driver);
+        }
+        return;
+
+      case 'blocked':
         await logout();
 
         Alert.alert(
-          verificationStatus === 'blocked'
-            ? 'Account Blocked'
-            : 'Registration Rejected',
-          verificationStatus === 'blocked'
-            ? 'Your account has been blocked. Please contact the administrator.'
-            : 'Your registration has been rejected. Please contact the administrator.',
+          'Account Blocked',
+          'Your account has been blocked. Please contact the administrator.',
           [
             {
               text: 'OK',

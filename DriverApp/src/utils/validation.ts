@@ -1,6 +1,19 @@
 export function isValidMobile(mobile: string): boolean {
-  const cleaned = mobile.replace(/[\s-]/g, '');
-  return cleaned.length >= 9 && /^[0-9]+$/.test(cleaned);
+  return /^947\d{8}$/.test(normalizeMobile(mobile));
+}
+
+export function normalizeMobile(mobile: string): string {
+  const cleaned = mobile.trim().replace(/[\s-]/g, '');
+
+  if (cleaned.startsWith('+94')) {
+    return cleaned.slice(1);
+  }
+
+  if (cleaned.startsWith('0')) {
+    return `94${cleaned.slice(1)}`;
+  }
+
+  return cleaned.startsWith('94') ? cleaned : `94${cleaned}`;
 }
 
 export function isValidEmail(email: string): boolean {
@@ -9,11 +22,11 @@ export function isValidEmail(email: string): boolean {
 
 export function isValidNIC(nic: string): boolean {
   // Sri Lanka NIC: 9 digits + V/X, or 12 digits
-  return /^[0-9]{9}[VvXx]?$/.test(nic) || /^[0-9]{12}$/.test(nic);
+  return /^[0-9]{9}[VvXx]$/.test(nic.trim()) || /^[0-9]{12}$/.test(nic.trim());
 }
 
 export function isValidPassword(password: string): boolean {
-  return password.length >= 6;
+  return password.length >= 8 && /[A-Za-z]/.test(password) && /\d/.test(password);
 }
 
 export function isValidBusRoute(route: string): boolean {

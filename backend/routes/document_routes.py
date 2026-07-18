@@ -1,4 +1,4 @@
-import os
+import re
 from datetime import datetime, timezone
 
 from bson.objectid import ObjectId
@@ -48,6 +48,18 @@ ALLOWED_IMAGE_MIME_TYPES = {
 }
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
+
+
+def has_all_required_documents(documents):
+    if not isinstance(documents, dict):
+        return False
+
+    return all(
+        isinstance(documents.get(document_type), dict)
+        and documents[document_type].get("fileName")
+        and documents[document_type].get("url")
+        for document_type in DOCUMENT_TYPES
+    )
 
 
 def normalize_document_type(value):
@@ -181,6 +193,29 @@ def validate_driver_id(driver_id):
     return ObjectId(driver_id)
 
 
+def kyc_revision_snapshot(driver):
+    raw_revision = driver.get("kycRevision")
+    try:
+        revision = max(int(raw_revision or 0), 0)
+    except (TypeError, ValueError):
+        revision = 0
+
+    condition = (
+        {"kycRevision": raw_revision}
+        if "kycRevision" in driver
+        else {"kycRevision": {"$exists": False}}
+    )
+    return revision, condition
+
+
+def field_snapshot_condition(container, field, value):
+    return (
+        {field: value}
+        if field in container
+        else {field: {"$exists": False}}
+    )
+
+
 def build_upload_response(
     document_type,
     result,
@@ -257,10 +292,10 @@ def upload_registration_document():
             ),
         }), 400
 
-    if not mobile:
+    if not re.fullmatch(r"947\d{8}", mobile):
         return jsonify({
             "error": (
-                "Mobile number is required "
+                "A valid Sri Lankan mobile number is required "
                 "before document upload"
             ),
         }), 400
@@ -372,18 +407,83 @@ def upload_driver_document(driver_id):
 
     now = datetime.now(timezone.utc)
     document_field = f"documents.{document_type}"
+    current_documents = driver.get("documents") or {}
+    updated_documents = {
+        **current_documents,
+        document_type: result,
+    }
+    previous_document = current_documents.get(document_type)
+    revision, revision_condition = kyc_revision_snapshot(driver)
+    update_fields = {
+        document_field: result,
+        "updatedAt": now,
+        "kycRevision": revision + 1,
+    }
+    if has_all_required_documents(updated_documents):
+        update_fields["kycStatus"] = "SUBMITTED"
+        if str(driver.get("verificationStatus", "")).lower() in {
+            "approved",
+            "verified",
+            "rejected",
+        }:
+            update_fields["verificationStatus"] = "under_review"
 
-    drivers_collection.update_one(
+    update_result = drivers_collection.update_one(
         {
             "_id": driver_object_id,
+            "$and": [
+                revision_condition,
+                (
+                    {document_field: previous_document}
+                    if document_type in current_documents
+                    else {document_field: {"$exists": False}}
+                ),
+                field_snapshot_condition(
+                    driver,
+                    "verificationStatus",
+                    driver.get("verificationStatus"),
+                ),
+            ],
         },
         {
-            "$set": {
-                document_field: result,
-                "updatedAt": now,
-            },
+            "$set": update_fields,
         },
     )
+
+    if update_result.matched_count != 1:
+        try:
+            delete_document(str(result.get("fileName") or ""))
+        except Exception:
+            current_app.logger.exception(
+                "Could not clean up an unassigned uploaded document"
+            )
+        if drivers_collection.find_one(
+            {"_id": driver_object_id},
+            {"_id": 1},
+        ):
+            return jsonify({
+                "error": (
+                    "Driver verification or document state changed during upload; "
+                    "reload and retry"
+                ),
+            }), 409
+        return jsonify({"error": "Driver not found"}), 404
+
+    previous_file_name = str(
+        previous_document.get("fileName")
+        if isinstance(previous_document, dict)
+        else ""
+    ).strip()
+    new_file_name = str(result.get("fileName") or "").strip()
+    if previous_file_name and previous_file_name != new_file_name:
+        try:
+            delete_document(previous_file_name)
+        except Exception:
+            # The new reference is already authoritative. Log cleanup failure
+            # without exposing storage details or rolling back a valid upload.
+            current_app.logger.exception(
+                "Could not remove the replaced driver document"
+            )
 
     return build_upload_response(
         document_type,
@@ -485,6 +585,17 @@ def delete_driver_document(
             "error": "Driver not found",
         }), 404
 
+    if str(driver.get("verificationStatus", "")).lower() in {
+        "approved",
+        "verified",
+    }:
+        return jsonify({
+            "error": (
+                "Approved identity documents cannot be deleted. "
+                "Upload a replacement for administrator review instead."
+            ),
+        }), 409
+
     document_info = driver.get(
         "documents",
         {},
@@ -502,24 +613,22 @@ def delete_driver_document(
         )
     ).strip()
 
-    try:
-        if storage_file_name:
-            delete_document(
-                storage_file_name
-            )
-    except Exception as error:
-        return build_storage_error_response(
-            error,
-            "Could not delete document from storage",
-        )
-
     document_field = (
         f"documents.{normalized_document_type}"
     )
-
-    drivers_collection.update_one(
+    revision, revision_condition = kyc_revision_snapshot(driver)
+    update_result = drivers_collection.update_one(
         {
             "_id": driver_object_id,
+            "$and": [
+                revision_condition,
+                {document_field: document_info},
+                {
+                    "verificationStatus": {
+                        "$nin": ["approved", "verified"],
+                    },
+                },
+            ],
         },
         {
             "$unset": {
@@ -529,9 +638,42 @@ def delete_driver_document(
                 "updatedAt": datetime.now(
                     timezone.utc
                 ),
+                "kycStatus": "NOT_SUBMITTED",
+                "kycRevision": revision + 1,
             },
         },
     )
+
+    if update_result.matched_count != 1:
+        current_driver = drivers_collection.find_one(
+            {"_id": driver_object_id},
+            {"verificationStatus": 1},
+        )
+        if not current_driver:
+            return jsonify({"error": "Driver not found"}), 404
+        if str(current_driver.get("verificationStatus", "")).lower() in {
+            "approved",
+            "verified",
+        }:
+            return jsonify({
+                "error": (
+                    "Approved identity documents cannot be deleted. "
+                    "Upload a replacement for administrator review instead."
+                ),
+            }), 409
+        return jsonify({
+            "error": "Document state changed; reload and retry",
+        }), 409
+
+    if storage_file_name:
+        try:
+            delete_document(storage_file_name)
+        except Exception:
+            # MongoDB is authoritative. A failed object cleanup leaves only an
+            # unreachable orphan and must not restore a deleted KYC reference.
+            current_app.logger.exception(
+                "Could not remove deleted driver document from storage"
+            )
 
     return jsonify({
         "status": "deleted",

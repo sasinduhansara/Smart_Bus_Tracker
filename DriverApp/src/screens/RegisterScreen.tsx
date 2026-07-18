@@ -88,7 +88,7 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
       newErrors.email = 'Enter a valid email address';
     }
     if (!isValidPassword(form.password)) {
-      newErrors.password = 'Password must be at least 6 characters';
+      newErrors.password = 'Use at least 8 characters with a letter and number';
     }
     if (!form.conductorName.trim()) {
       newErrors.conductorName = 'Conductor name is required';
@@ -143,6 +143,7 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
         mobile: form.mobile,
         email: form.email,
         nic: form.nic,
+        vehicleRegistrationNumber: form.vehicleRegistrationNumber || undefined,
       });
 
       if (result.available) return true;
@@ -169,7 +170,10 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
       if (!validatePersonalStep()) return;
       if (!(await checkPersonalAvailability())) return;
     }
-    if (form.currentStep === 2 && !validateDriverDetailsStep()) return;
+    if (form.currentStep === 2) {
+      if (!validateDriverDetailsStep()) return;
+      if (!(await checkPersonalAvailability())) return;
+    }
 
     setErrors({});
     nextStep();

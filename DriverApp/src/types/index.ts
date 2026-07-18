@@ -35,7 +35,6 @@ export interface Driver {
   nic: string;
   mobile: string;
   email: string;
-  password?: string;
   conductorName: string;
   driverNtcRegistrationNumber: string;
   busNtcPermitNumber: string;
@@ -80,7 +79,7 @@ export interface DriverHomeShift {
 }
 
 export interface DriverHomeTracking {
-  status: 'live' | 'waiting' | 'unavailable';
+  status: 'live' | 'paused' | 'waiting' | 'unavailable' | 'offline';
   label: string;
   message: string;
   lastUpdatedAt: string;
@@ -115,6 +114,148 @@ export interface DriverHomeResponse {
   recentTrips: DriverHomeTrip[];
 }
 
+export interface DriverNotification {
+  id: string;
+  title: string;
+  message: string;
+  type: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export interface DriverNotificationsResponse {
+  status: string;
+  notifications: DriverNotification[];
+}
+
+export type ServerTripStatus = 'active' | 'paused' | 'completed';
+
+export interface TripLocation {
+  lat: number;
+  lng: number;
+  timestamp: string;
+  speed?: number;
+  heading?: number;
+  accuracy: number;
+}
+
+export interface DriverTrip {
+  id: string;
+  driverId: string;
+  busId: string;
+  vehicleRegistrationNumber: string;
+  routeNumber: string;
+  routeName?: string;
+  origin: string;
+  destination: string;
+  status: ServerTripStatus;
+  startedAt: string;
+  pausedAt?: string;
+  resumedAt?: string;
+  completedAt?: string;
+  durationSeconds: number;
+  activeDurationSeconds: number;
+  pausedDurationSeconds?: number;
+  distanceKm: number;
+  lastLocation?: TripLocation;
+}
+
+export interface ActiveTripResponse {
+  status: 'success';
+  trip: DriverTrip | null;
+}
+
+export interface TripHistoryResponse {
+  status: 'success';
+  trips: DriverTrip[];
+}
+
+export interface TripMutationResponse {
+  status: 'started' | 'paused' | 'resumed' | 'completed';
+  trip: DriverTrip;
+  bus: LiveBusLocation;
+}
+
+export interface CoordinatePoint {
+  latitude: number;
+  longitude: number;
+}
+
+export interface DriverRouteStop extends CoordinatePoint {
+  id: string;
+  name: string;
+  sequence: number;
+}
+
+export interface DriverRouteDetails {
+  routeNumber: string;
+  name: string;
+  direction: string;
+  polyline: CoordinatePoint[];
+  stops: DriverRouteStop[];
+}
+
+export interface RouteDetailsResponse {
+  status: 'success';
+  route: DriverRouteDetails;
+}
+
+export interface EtaStopSummary {
+  id: string;
+  name: string;
+}
+
+export interface DriverEtaResponse {
+  status: 'success';
+  busId: string;
+  routeNumber: string;
+  destinationStop: EtaStopSummary;
+  nextStop: EtaStopSummary | null;
+  etaMinutes: number;
+  estimatedArrivalAt: string;
+  remainingDistanceKm: number;
+  modelVersion: string;
+}
+
+export type IssueCategory =
+  | 'vehicle_breakdown'
+  | 'route_obstruction'
+  | 'traffic_delay'
+  | 'accident'
+  | 'passenger_emergency'
+  | 'technical_issue'
+  | 'gps_problem';
+
+export type IssueSeverity = 'low' | 'medium' | 'high' | 'critical';
+
+export interface DriverIssueResponse {
+  status: 'reported';
+  issue: {
+    id: string;
+    category: IssueCategory;
+    severity: IssueSeverity;
+    status: string;
+    createdAt: string;
+  };
+}
+
+export interface LiveBusLocation {
+  bus_id: string;
+  vehicleRegistrationNumber?: string;
+  routeNumber?: string;
+  lat?: number;
+  lng?: number;
+  speed?: number;
+  heading?: number;
+  accuracy?: number;
+  updatedAt?: string;
+  statusUpdatedAt?: string;
+  tripId?: string;
+  activeTripId?: string;
+  operationalStatus: 'active' | 'paused' | 'offline';
+  isActive: boolean;
+}
+
 export interface OTPResponse {
   status: string;
   mobile: string;
@@ -123,7 +264,9 @@ export interface OTPResponse {
 
 export interface RegistrationAvailabilityResponse {
   available: boolean;
-  conflicts: Partial<Record<'mobile' | 'email' | 'nic', string>>;
+  conflicts: Partial<
+    Record<'mobile' | 'email' | 'nic' | 'vehicleRegistrationNumber', string>
+  >;
 }
 
 export interface DocumentUploadResponse {

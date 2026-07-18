@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -40,6 +40,7 @@ const DOCUMENT_OPTIONS: DocumentOption[] = [
   { key: 'drivingLicenseFront', label: 'Driving License Front' },
   { key: 'drivingLicenseBack', label: 'Driving License Back' },
 ];
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
 const toDocumentFile = (asset: Asset): DocumentFile | null => {
   if (!asset.uri) return null;
@@ -61,11 +62,29 @@ function RegisterDocumentsScreen({
 }: RegisterDocumentsScreenProps) {
   const [uploadingDocument, setUploadingDocument] =
     useState<RegistrationDocumentKey | null>(null);
+  const mountedRef = useRef(true);
+  const uploadingDocumentRef = useRef<RegistrationDocumentKey | null>(null);
+  const uploadControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      uploadControllerRef.current?.abort();
+      uploadControllerRef.current = null;
+      uploadingDocumentRef.current = null;
+    };
+  }, []);
 
   const uploadSelectedDocument = async (
     field: RegistrationDocumentKey,
     file: DocumentFile,
   ) => {
+    if (uploadingDocumentRef.current) {
+      return;
+    }
+
     if (!form.mobile.trim()) {
       Alert.alert(
         'Mobile Required',
@@ -74,13 +93,24 @@ function RegisterDocumentsScreen({
       return;
     }
 
-    setUploadingDocument(field);
+    const uploadController = new AbortController();
+    uploadControllerRef.current = uploadController;
+    uploadingDocumentRef.current = field;
+
+    if (mountedRef.current) {
+      setUploadingDocument(field);
+    }
     try {
       const result = await uploadRegistrationDocument({
         mobile: form.mobile,
         docType: field,
         file,
+        signal: uploadController.signal,
       });
+
+      if (!mountedRef.current) {
+        return;
+      }
 
       onSetDocument(field, {
         ...file,
@@ -90,11 +120,22 @@ function RegisterDocumentsScreen({
         uploaded: true,
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Could not upload document';
-      Alert.alert('Upload Failed', message);
+      if (
+        mountedRef.current &&
+        (!error || typeof error !== 'object' || !('code' in error) ||
+          error.code !== 'CANCELLED')
+      ) {
+        const message =
+          error instanceof Error ? error.message : 'Could not upload document';
+        Alert.alert('Upload Failed', message);
+      }
     } finally {
-      setUploadingDocument(null);
+      uploadControllerRef.current = null;
+      uploadingDocumentRef.current = null;
+
+      if (mountedRef.current) {
+        setUploadingDocument(null);
+      }
     }
   };
 
@@ -104,9 +145,19 @@ function RegisterDocumentsScreen({
       quality: 0.8,
     });
 
+    if (!mountedRef.current) return;
+
     if (response.didCancel) return;
     if (response.errorCode) {
       Alert.alert('Document Error', response.errorMessage || 'Could not open camera');
+      return;
+    }
+
+    if (
+      typeof response.assets?.[0]?.fileSize === 'number' &&
+      response.assets[0].fileSize > MAX_FILE_SIZE
+    ) {
+      Alert.alert('Document Error', 'The selected image exceeds the 5 MB limit.');
       return;
     }
 
@@ -121,6 +172,8 @@ function RegisterDocumentsScreen({
       quality: 0.8,
     });
 
+    if (!mountedRef.current) return;
+
     if (response.didCancel) return;
     if (response.errorCode) {
       Alert.alert(
@@ -130,14 +183,25 @@ function RegisterDocumentsScreen({
       return;
     }
 
+    if (
+      typeof response.assets?.[0]?.fileSize === 'number' &&
+      response.assets[0].fileSize > MAX_FILE_SIZE
+    ) {
+      Alert.alert('Document Error', 'The selected image exceeds the 5 MB limit.');
+      return;
+    }
+
     const file = response.assets?.[0] ? toDocumentFile(response.assets[0]) : null;
     if (file) await uploadSelectedDocument(field, file);
   };
 
   const showPicker = (field: RegistrationDocumentKey) => {
     Alert.alert('Select Document', 'Choose how you want to add this document.', [
-      { text: 'Camera', onPress: () => void pickFromCamera(field) },
-      { text: 'Gallery', onPress: () => void pickFromGallery(field) },
+      { text: 'Camera', onPress: () => pickFromCamera(field).catch(() => undefined) },
+      {
+        text: 'Gallery',
+        onPress: () => pickFromGallery(field).catch(() => undefined),
+      },
       { text: 'Cancel', style: 'cancel' },
     ]);
   };
@@ -172,12 +236,32 @@ function RegisterDocumentsScreen({
 
             <View style={styles.documentActions}>
               <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={
+                  isUploading
+                    ? `Cancel ${option.label} upload`
+                    : `${selectedDocument ? 'Replace' : 'Select'} ${option.label}`
+                }
+                accessibilityState={{
+                  busy: isUploading,
+                  disabled:
+                    loading || (Boolean(uploadingDocument) && !isUploading),
+                }}
                 style={styles.secondaryButton}
-                onPress={() => showPicker(option.key)}
-                disabled={loading || Boolean(uploadingDocument)}
+                onPress={() =>
+                  isUploading
+                    ? uploadControllerRef.current?.abort()
+                    : showPicker(option.key)
+                }
+                disabled={
+                  loading || (Boolean(uploadingDocument) && !isUploading)
+                }
               >
                 {isUploading ? (
-                  <ActivityIndicator color="#0066cc" />
+                  <View style={styles.cancelUploadContent}>
+                    <ActivityIndicator color="#0066cc" />
+                    <Text style={styles.secondaryButtonText}>Cancel upload</Text>
+                  </View>
                 ) : (
                   <Text style={styles.secondaryButtonText}>
                     {selectedDocument ? 'Replace' : 'Select'}
@@ -272,6 +356,11 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     color: '#0066cc',
     fontWeight: '700',
+  },
+  cancelUploadContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   removeButton: {
     flex: 1,

@@ -13,7 +13,11 @@ import AuthScreenShell from '../components/AuthScreenShell';
 import DocumentUploader, {
   type DocumentInfo,
 } from '../components/DocumentUploader';
-import { getDriverStatus, type DriverStatusResponse } from '../services/api';
+import {
+  getDriverProfile,
+  getDriverStatus,
+  type DriverStatusResponse,
+} from '../services/api';
 import { useAuthStore } from '../store/useAuthStore';
 import type { RootStackParamList } from '../types/navigation';
 import type { RegistrationDocumentKey } from '../types/registration';
@@ -33,6 +37,23 @@ type VerificationStatus =
   | 'under_review'
   | 'unknown';
 
+function normalizeStatus(value?: string): VerificationStatus {
+  const status = String(value || '').trim().toLowerCase();
+
+  switch (status) {
+    case 'approved':
+    case 'verified':
+    case 'pending':
+    case 'blocked':
+    case 'rejected':
+    case 'unverified':
+    case 'under_review':
+      return status;
+    default:
+      return 'unknown';
+  }
+}
+
 function PendingApprovalScreen({
   route,
   navigation,
@@ -48,35 +69,19 @@ function PendingApprovalScreen({
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
   const [checkingStatus, setCheckingStatus] = useState(false);
   const [currentStatus, setCurrentStatus] =
-    useState<VerificationStatus>('pending');
+    useState<VerificationStatus>(() =>
+      normalizeStatus(driver?.verificationStatus),
+    );
   const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState(
     'Waiting for administrator approval.',
   );
 
   const isCheckingRef = useRef(false);
-
-  const normalizeStatus = (
-    response: DriverStatusResponse,
-  ): VerificationStatus => {
-    const status = (response.verificationStatus ?? response.status ?? '')
-      .trim()
-      .toLowerCase();
-
-    switch (status) {
-      case 'approved':
-      case 'verified':
-      case 'pending':
-      case 'blocked':
-      case 'rejected':
-      case 'unverified':
-      case 'under_review':
-        return status;
-
-      default:
-        return 'unknown';
-    }
-  };
+  const mountedRef = useRef(true);
+  const lastHandledStatusRef = useRef<VerificationStatus>(
+    normalizeStatus(driver?.verificationStatus),
+  );
 
   const navigateToLogin = useCallback(async () => {
     await logout();
@@ -89,7 +94,11 @@ function PendingApprovalScreen({
 
   const handleStatusResult = useCallback(
     (response: DriverStatusResponse) => {
-      const normalizedStatus = normalizeStatus(response);
+      const normalizedStatus = normalizeStatus(
+        response.verificationStatus ?? response.status,
+      );
+      const previousStatus = lastHandledStatusRef.current;
+      lastHandledStatusRef.current = normalizedStatus;
 
       setCurrentStatus(normalizedStatus);
       setLastCheckedAt(new Date());
@@ -98,34 +107,36 @@ function PendingApprovalScreen({
         case 'approved':
         case 'verified':
           setStatusMessage('Your account has been approved.');
-          void updateVerificationStatus('approved');
+          updateVerificationStatus('approved').catch(() => undefined);
 
-          Alert.alert(
-            'Account Approved',
-            'Your driver account has been approved. You can now access driver features.',
-            [
-              {
-                text: 'Continue',
-                onPress: () => {
-                  navigation.reset({
-                    index: 0,
-                    routes: [
-                      {
-                        name: 'DriverHome',
-                        params: {
-                          driver: {
-                            ...driver,
-                            ...response,
-                            verificationStatus: 'approved',
+          if (previousStatus !== normalizedStatus) {
+            Alert.alert(
+              'Account Approved',
+              'Your driver account has been approved. You can now access driver features.',
+              [
+                {
+                  text: 'Continue',
+                  onPress: () => {
+                    navigation.reset({
+                      index: 0,
+                      routes: [
+                        {
+                          name: 'DriverHome',
+                          params: {
+                            driver: {
+                              ...driver,
+                              ...response,
+                              verificationStatus: 'approved',
+                            },
                           },
                         },
-                      },
-                    ],
-                  });
+                      ],
+                    });
+                  },
                 },
-              },
-            ],
-          );
+              ],
+            );
+          }
           return;
 
         case 'pending':
@@ -135,32 +146,31 @@ function PendingApprovalScreen({
           return;
 
         case 'blocked':
-          setStatusMessage('Your account has been blocked.');
-
-          Alert.alert(
-            'Account Blocked',
-            'Your account has been blocked. Please contact the administrator.',
-            [
-              {
-                text: 'Back to Login',
-                onPress: navigateToLogin,
-              },
-            ],
+          setStatusMessage(
+            response.blockReason?.trim()
+              ? `Blocked by operations: ${response.blockReason.trim()}`
+              : 'Your account has been blocked. Contact operations for help.',
           );
+
+          if (previousStatus !== 'blocked') {
+            Alert.alert(
+              'Account Blocked',
+              'This account can no longer access driver operations.',
+              [
+                {
+                  text: 'Back to Login',
+                  onPress: navigateToLogin,
+                },
+              ],
+            );
+          }
           return;
 
         case 'rejected':
-          setStatusMessage('Your registration has been rejected.');
-
-          Alert.alert(
-            'Registration Rejected',
-            'Your registration has been rejected. Please contact the administrator for more information.',
-            [
-              {
-                text: 'Back to Login',
-                onPress: navigateToLogin,
-              },
-            ],
+          setStatusMessage(
+            response.rejectionReason?.trim()
+              ? `Correction requested: ${response.rejectionReason.trim()}`
+              : 'Corrections are required. Replace the requested documents or contact operations.',
           );
           return;
 
@@ -188,20 +198,22 @@ function PendingApprovalScreen({
       try {
         const response = await getDriverStatus(driverId);
 
-        handleStatusResult(response);
+        if (mountedRef.current) {
+          handleStatusResult(response);
+        }
       } catch (error) {
         const message =
           error instanceof Error
             ? error.message
             : 'Could not check your account status.';
 
-        if (!silent) {
+        if (!silent && mountedRef.current) {
           Alert.alert('Status Check Failed', message);
         }
       } finally {
         isCheckingRef.current = false;
 
-        if (!silent) {
+        if (!silent && mountedRef.current) {
           setCheckingStatus(false);
         }
       }
@@ -210,16 +222,43 @@ function PendingApprovalScreen({
   );
 
   useEffect(() => {
+    mountedRef.current = true;
     checkApprovalStatus(true);
+
+    if (driverId) {
+      getDriverProfile(driverId)
+        .then(profile => {
+          if (!mountedRef.current || !profile.documents) {
+            return;
+          }
+
+          const uploadedDocuments = Object.entries(profile.documents)
+            .filter((entry): entry is [RegistrationDocumentKey, { url: string }] =>
+              Boolean(entry[1]?.url),
+            )
+            .map(([docType, document]) => ({
+              docType,
+              label: docType
+                .replace(/([A-Z])/g, ' $1')
+                .replace(/^./, character => character.toUpperCase()),
+              uploadedUrl: document.url,
+            }));
+
+          setDocuments(uploadedDocuments);
+        })
+        .catch(() => undefined);
+    }
 
     const intervalId = setInterval(() => {
       checkApprovalStatus(true);
     }, 30000);
 
     return () => {
+      mountedRef.current = false;
+      isCheckingRef.current = false;
       clearInterval(intervalId);
     };
-  }, [checkApprovalStatus]);
+  }, [checkApprovalStatus, driverId]);
 
   const handleDocumentUploaded = (
     docType: RegistrationDocumentKey,
@@ -295,19 +334,27 @@ function PendingApprovalScreen({
     <AuthScreenShell scroll contentContainerStyle={styles.container}>
       <View style={styles.headerCard}>
         <View style={styles.statusPill}>
-          <Text style={styles.statusPillText}>Pending Approval</Text>
+          <Text style={styles.statusPillText}>{getStatusLabel()}</Text>
         </View>
 
-        <Text style={styles.title}>Registration Pending</Text>
+        <Text style={styles.title}>
+          {currentStatus === 'rejected'
+            ? 'Correction Required'
+            : currentStatus === 'blocked'
+            ? 'Account Blocked'
+            : 'Registration Review'}
+        </Text>
 
         <Text style={styles.subtitle}>
           Thank you for registering, {driver?.fullName || 'Driver'}!
         </Text>
 
         <Text style={styles.message}>
-          Your account is currently being verified. GPS tracking and other
-          restricted driver features will become available after your account is
-          approved.
+          {currentStatus === 'rejected'
+            ? 'Review the operations message below and replace any requested identity documents.'
+            : currentStatus === 'blocked'
+            ? 'Driver operations and GPS tracking are disabled for this account.'
+            : 'GPS tracking and live trip controls become available after administrator approval.'}
         </Text>
       </View>
 
@@ -344,17 +391,17 @@ function PendingApprovalScreen({
           )}
         </TouchableOpacity>
 
-        {driverId ? (
+        {driverId && currentStatus !== 'blocked' ? (
           <DocumentUploader
             driverId={driverId}
             documents={documents}
             onDocumentUploaded={handleDocumentUploaded}
           />
-        ) : (
+        ) : !driverId ? (
           <Text style={styles.errorText}>
             Driver identification number is unavailable.
           </Text>
-        )}
+        ) : null}
 
         <TouchableOpacity
           style={styles.secondaryButton}

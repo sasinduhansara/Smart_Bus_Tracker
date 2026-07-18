@@ -150,38 +150,37 @@ def normalize_route(value: Any) -> RouteDetails | None:
 
 
 def _load_routes_from_database() -> list[RouteDetails]:
-    try:
-        records = routes_collection.find(
-            {},
-            {
-                "_id": 0,
-                "routeNumber": 1,
-                "name": 1,
-                "direction": 1,
-                "polyline": 1,
-                "stops": 1,
-            },
-        )
-    except PyMongoError:
-        return []
+    records = routes_collection.find(
+        {},
+        {
+            "_id": 0,
+            "routeNumber": 1,
+            "name": 1,
+            "direction": 1,
+            "polyline": 1,
+            "stops": 1,
+        },
+    )
 
-    try:
-        routes = [
-            route
-            for route in (
-                normalize_route(record)
-                for record in records
-            )
-            if route is not None
-        ]
-    except PyMongoError:
-        return []
+    routes = [
+        route
+        for route in (
+            normalize_route(record)
+            for record in records
+        )
+        if route is not None
+    ]
 
     return routes
 
 
 def get_all_routes() -> list[RouteDetails]:
-    database_routes = _load_routes_from_database()
+    try:
+        database_routes = _load_routes_from_database()
+    except PyMongoError:
+        if not DEVELOPMENT_ROUTES:
+            raise
+        database_routes = []
 
     if database_routes:
         return database_routes

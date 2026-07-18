@@ -34,6 +34,7 @@ import { passengerSocket } from '../services/socket';
 import type {
   BusLiveStatus,
   BusLocation,
+  BusLocationUpdate,
   CoordinatePoint,
   EtaPredictionResponse,
   RouteDetails,
@@ -45,6 +46,10 @@ import {
   getBusStatus,
   getDistanceKm,
 } from '../utils/busStatus';
+import {
+  mergeBusUpdateIntoMap,
+  reconcileBusSnapshot,
+} from '../utils/busUpdates';
 import { passengerColors } from '../theme/tokens';
 
 const DEFAULT_REGION = {
@@ -114,6 +119,8 @@ function busStatusLabel(status: BusLiveStatus): string {
   switch (status) {
     case 'live':
       return 'Live';
+    case 'paused':
+      return 'Paused';
     case 'stale':
       return 'Stale';
     default:
@@ -125,6 +132,8 @@ function statusColor(status: BusLiveStatus): string {
   switch (status) {
     case 'live':
       return COLORS.green;
+    case 'paused':
+      return COLORS.amber;
     case 'stale':
       return COLORS.amber;
     default:
@@ -152,7 +161,13 @@ function LiveMapScreen({
   initialStopId,
 }: LiveMapScreenProps): React.JSX.Element {
   const mapRef = useRef<MapView | null>(null);
-  const etaRequestInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
+  const requestSequenceRef = useRef(0);
+  const busUpdateSequenceRef = useRef(0);
+  const busUpdateRevisionsRef = useRef<Record<string, number>>({});
+  const etaRequestInFlightRef = useRef<string | null>(null);
+  const etaRequestInFlightContextRef = useRef<string | null>(null);
+  const latestEtaRequestKeyRef = useRef<string | null>(null);
   const lastEtaRequestAtRef = useRef(0);
   const lastEtaLocationRef = useRef<{ lat: number; lng: number } | null>(null);
 
@@ -179,51 +194,101 @@ function LiveMapScreen({
   const [routeError, setRouteError] = useState<string | null>(null);
   const [etaError, setEtaError] = useState<string | null>(null);
   const [eta, setEta] = useState<EtaPredictionResponse | null>(null);
+  const [etaUpdatedAt, setEtaUpdatedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
 
   const selectedBus = selectedBusId ? buses[selectedBusId] : null;
   const selectedRoute = selectedRouteNumber || selectedBus?.routeNumber || null;
+  const selectedBusStatus = selectedBus
+    ? getBusStatus(selectedBus, now)
+    : null;
+  const etaContextKey =
+    selectedBus &&
+    selectedBusStatus === 'live' &&
+    selectedRoute &&
+    selectedStopId
+      ? [selectedBus.bus_id, selectedRoute, selectedStopId].join(':')
+      : null;
+  const etaRequestKey =
+    etaContextKey && selectedBus
+      ? [
+          etaContextKey,
+          selectedBus.updatedAt || '',
+          selectedBus.statusUpdatedAt || '',
+        ].join(':')
+      : null;
+  latestEtaRequestKeyRef.current = etaRequestKey;
 
-  const handleBusUpdate = useCallback((bus: BusLocation) => {
-    setBuses(previousBuses => ({
-      ...previousBuses,
-      [bus.bus_id]: {
-        ...previousBuses[bus.bus_id],
-        ...bus,
-      },
-    }));
+  const handleBusUpdate = useCallback((bus: BusLocationUpdate) => {
+    if (!mountedRef.current) {
+      return;
+    }
+
+    const revision = ++busUpdateSequenceRef.current;
+    busUpdateRevisionsRef.current[bus.bus_id] = revision;
+    setBuses(previousBuses => mergeBusUpdateIntoMap(previousBuses, bus));
   }, []);
 
   const loadInitialData = useCallback(async (manualRefresh = false) => {
-    if (manualRefresh) {
-      setRefreshing(true);
-    } else {
-      setLoading(true);
-    }
+    const sequence = ++requestSequenceRef.current;
+    const snapshotBusUpdateSequence = busUpdateSequenceRef.current;
 
-    setError(null);
+    if (mountedRef.current) {
+      if (manualRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+
+      setError(null);
+    }
 
     try {
       const initialBuses = await getBuses();
-      const busMap = initialBuses.reduce<Record<string, BusLocation>>(
-        (nextBusMap, bus) => {
-          nextBusMap[bus.bus_id] = bus;
-          return nextBusMap;
-        },
-        {},
+
+      if (!mountedRef.current || sequence !== requestSequenceRef.current) {
+        return;
+      }
+
+      const protectedBusIds = new Set(
+        Object.entries(busUpdateRevisionsRef.current)
+          .filter(([, revision]) => revision > snapshotBusUpdateSequence)
+          .map(([busId]) => busId),
       );
-      setBuses(busMap);
+      setBuses(previousBuses =>
+        reconcileBusSnapshot(
+          previousBuses,
+          initialBuses,
+          protectedBusIds,
+        ),
+      );
 
       const routeResponse = await getRoutes();
-      setRoutes(routeResponse.routes);
+
+      if (mountedRef.current && sequence === requestSequenceRef.current) {
+        setRoutes(routeResponse.routes);
+      }
     } catch (loadError) {
-      setError(
-        getMessage(loadError, 'Unable to load live bus tracking data.'),
-      );
+      if (mountedRef.current && sequence === requestSequenceRef.current) {
+        setError(
+          getMessage(loadError, 'Unable to load live bus tracking data.'),
+        );
+      }
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (mountedRef.current && sequence === requestSequenceRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      requestSequenceRef.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -237,26 +302,15 @@ function LiveMapScreen({
   }, []);
 
   useEffect(() => {
-    let isMounted = true;
     let removeBusListener: (() => void) | undefined;
     let removeStatusListener: (() => void) | undefined;
 
-    const bootstrap = async () => {
-      await loadInitialData();
-
-      if (!isMounted) {
-        return;
-      }
-
-      removeStatusListener = passengerSocket.onStatusChange(setSocketStatus);
-      removeBusListener = passengerSocket.onBusLocationUpdate(handleBusUpdate);
-      passengerSocket.connect();
-    };
-
-    bootstrap();
+    removeStatusListener = passengerSocket.onStatusChange(setSocketStatus);
+    removeBusListener = passengerSocket.onBusLocationUpdate(handleBusUpdate);
+    passengerSocket.connect();
+    loadInitialData();
 
     return () => {
-      isMounted = false;
       removeBusListener?.();
       removeStatusListener?.();
       passengerSocket.disconnect();
@@ -266,21 +320,33 @@ function LiveMapScreen({
   useEffect(() => {
     const loadUserLocation = async () => {
       if (Platform.OS === 'android') {
-        const result = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        );
+        const permission =
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION;
+        const alreadyGranted = await PermissionsAndroid.check(permission);
+        const result = alreadyGranted
+          ? PermissionsAndroid.RESULTS.GRANTED
+          : await PermissionsAndroid.request(permission);
 
-        if (result !== PermissionsAndroid.RESULTS.GRANTED) {
+        if (
+          !mountedRef.current ||
+          result !== PermissionsAndroid.RESULTS.GRANTED
+        ) {
           return;
         }
       }
 
+      if (!mountedRef.current) {
+        return;
+      }
+
       Geolocation.getCurrentPosition(
         position => {
-          setUserLocation({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-          });
+          if (mountedRef.current) {
+            setUserLocation({
+              latitude: position.coords.latitude,
+              longitude: position.coords.longitude,
+            });
+          }
         },
         locationError => {
           console.log('[LiveMap] user location unavailable:', locationError);
@@ -409,6 +475,11 @@ function LiveMapScreen({
     [allBuses, selectedRouteNumber],
   );
 
+  const mapBuses = useMemo(
+    () => filteredBuses.filter(bus => getBusStatus(bus, now) !== 'offline'),
+    [filteredBuses, now],
+  );
+
   const liveBusCount = useMemo(
     () =>
       allBuses.filter(bus => getBusStatus(bus, now) === 'live').length,
@@ -424,11 +495,15 @@ function LiveMapScreen({
       routeDetails.stops.find(stop => stop.id === selectedStopId) || null
     );
   }, [routeDetails, selectedStopId]);
+  const etaIsStale = Boolean(
+    etaUpdatedAt && now - etaUpdatedAt > ETA_REFRESH_MS,
+  );
 
   const handleSelectRoute = useCallback(
     (routeNumber: string | null) => {
       setSelectedRouteNumber(routeNumber);
       setEta(null);
+      setEtaUpdatedAt(null);
       setEtaError(null);
       lastEtaRequestAtRef.current = 0;
       lastEtaLocationRef.current = null;
@@ -448,6 +523,7 @@ function LiveMapScreen({
     (bus: BusLocation) => {
       setSelectedBusId(bus.bus_id);
       setEta(null);
+      setEtaUpdatedAt(null);
       setEtaError(null);
       lastEtaRequestAtRef.current = 0;
       lastEtaLocationRef.current = null;
@@ -470,13 +546,38 @@ function LiveMapScreen({
     [selectedRouteNumber],
   );
 
+  useEffect(() => {
+    if (
+      selectedBus?.routeNumber &&
+      selectedBus.routeNumber !== selectedRouteNumber
+    ) {
+      setSelectedRouteNumber(selectedBus.routeNumber);
+      setSelectedStopId(null);
+    }
+  }, [selectedBus?.routeNumber, selectedRouteNumber]);
+
+  useEffect(() => {
+    setEta(null);
+    setEtaUpdatedAt(null);
+    setEtaError(null);
+    setEtaLoading(false);
+    lastEtaRequestAtRef.current = 0;
+    lastEtaLocationRef.current = null;
+  }, [etaContextKey]);
+
   const requestEta = useCallback(
     async (forceRefresh = false) => {
-      if (!selectedBus || !selectedStopId || !selectedRoute) {
+      if (
+        !selectedBus ||
+        !selectedStopId ||
+        !selectedRoute ||
+        !etaContextKey ||
+        !etaRequestKey
+      ) {
         return;
       }
 
-      if (etaRequestInFlightRef.current) {
+      if (etaRequestInFlightContextRef.current === etaContextKey) {
         return;
       }
 
@@ -500,7 +601,8 @@ function LiveMapScreen({
         return;
       }
 
-      etaRequestInFlightRef.current = true;
+      etaRequestInFlightRef.current = etaRequestKey;
+      etaRequestInFlightContextRef.current = etaContextKey;
       lastEtaRequestAtRef.current = currentTime;
       lastEtaLocationRef.current = {
         lat: selectedBus.lat,
@@ -516,17 +618,44 @@ function LiveMapScreen({
           destinationStopId: selectedStopId,
         });
 
-        setEta(prediction);
+        if (
+          mountedRef.current &&
+          latestEtaRequestKeyRef.current === etaRequestKey &&
+          prediction.busId === selectedBus.bus_id &&
+          prediction.routeNumber === selectedRoute &&
+          prediction.destinationStop.id === selectedStopId
+        ) {
+          setEta(prediction);
+          setEtaUpdatedAt(Date.now());
+        }
       } catch (predictionError) {
-        setEtaError(
-          getMessage(predictionError, 'Unable to update ETA prediction.'),
-        );
+        if (
+          mountedRef.current &&
+          latestEtaRequestKeyRef.current === etaRequestKey
+        ) {
+          setEtaError(
+            getMessage(predictionError, 'Unable to update ETA prediction.'),
+          );
+        }
       } finally {
-        etaRequestInFlightRef.current = false;
-        setEtaLoading(false);
+        if (etaRequestInFlightRef.current === etaRequestKey) {
+          etaRequestInFlightRef.current = null;
+          etaRequestInFlightContextRef.current = null;
+
+          if (mountedRef.current) {
+            setEtaLoading(false);
+          }
+        }
       }
     },
-    [eta, selectedBus, selectedRoute, selectedStopId],
+    [
+      eta,
+      etaContextKey,
+      etaRequestKey,
+      selectedBus,
+      selectedRoute,
+      selectedStopId,
+    ],
   );
 
   useEffect(() => {
@@ -541,6 +670,9 @@ function LiveMapScreen({
         contentContainerStyle={styles.routeScrollContent}
       >
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Show buses from all routes"
+          accessibilityState={{ selected: !selectedRouteNumber }}
           style={[
             styles.routeChip,
             !selectedRouteNumber && styles.routeChipActive,
@@ -564,6 +696,9 @@ function LiveMapScreen({
           return (
             <TouchableOpacity
               key={route.routeNumber}
+              accessibilityRole="button"
+              accessibilityLabel={`Show buses on route ${route.routeNumber}`}
+              accessibilityState={{ selected: isActive }}
               style={[
                 styles.routeChip,
                 isActive && styles.routeChipActive,
@@ -627,7 +762,7 @@ function LiveMapScreen({
         <View style={styles.bottomCard}>
           <Text style={styles.cardTitle}>Live buses</Text>
           <Text style={styles.cardMuted}>
-            {filteredBuses.length > 0
+            {mapBuses.length > 0
               ? 'Select a bus marker to view route, stops, and ETA.'
               : selectedRouteNumber
               ? 'No buses are active on this route right now.'
@@ -639,6 +774,9 @@ function LiveMapScreen({
           )}
 
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Refresh live buses"
+            accessibilityState={{ busy: refreshing, disabled: refreshing }}
             style={styles.secondaryButton}
             onPress={() => loadInitialData(true)}
             disabled={refreshing}
@@ -654,7 +792,8 @@ function LiveMapScreen({
       );
     }
 
-    const selectedBusStatus = getBusStatus(selectedBus, now);
+    const currentBusStatus = getBusStatus(selectedBus, now);
+    const etaAvailable = currentBusStatus === 'live' && Boolean(etaContextKey);
 
     return (
       <ScrollView
@@ -673,11 +812,11 @@ function LiveMapScreen({
           <View
             style={[
               styles.statusBadge,
-              { backgroundColor: statusColor(selectedBusStatus) },
+              { backgroundColor: statusColor(currentBusStatus) },
             ]}
           >
             <Text style={styles.statusBadgeText}>
-              {busStatusLabel(selectedBusStatus)}
+              {busStatusLabel(currentBusStatus)}
             </Text>
           </View>
         </View>
@@ -732,6 +871,9 @@ function LiveMapScreen({
                 return (
                   <TouchableOpacity
                     key={stop.id}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Use ${stop.name} as ETA destination`}
+                    accessibilityState={{ selected: isSelected }}
                     style={[
                       styles.stopChip,
                       isSelected && styles.stopChipActive,
@@ -740,6 +882,7 @@ function LiveMapScreen({
                       setSelectedStopId(stop.id);
                       setEtaError(null);
                       setEta(null);
+                      setEtaUpdatedAt(null);
                       lastEtaRequestAtRef.current = 0;
                       lastEtaLocationRef.current = null;
                     }}
@@ -763,14 +906,25 @@ function LiveMapScreen({
         {!!selectedStop && (
           <View style={styles.etaCard}>
             <View>
-              <Text style={styles.cardEyebrow}>ETA to</Text>
+              <Text style={styles.cardEyebrow}>
+                {etaIsStale || (etaError && eta) ? 'Last ETA to' : 'ETA to'}
+              </Text>
               <Text style={styles.etaTitle}>{selectedStop.name}</Text>
             </View>
             {etaLoading && (
               <Text style={styles.updatingText}>Updating ETA...</Text>
             )}
             {eta ? (
-              <View style={styles.etaResultRow}>
+              <View
+                style={styles.etaResultRow}
+                accessible
+                accessibilityLiveRegion="polite"
+                accessibilityLabel={`${eta.etaMinutes.toFixed(
+                  1,
+                )} minutes, ${eta.remainingDistanceKm.toFixed(
+                  1,
+                )} kilometres remaining to ${selectedStop.name}`}
+              >
                 <Text style={styles.etaMinutes}>
                   {eta.etaMinutes.toFixed(1)} min
                 </Text>
@@ -786,11 +940,23 @@ function LiveMapScreen({
                 Arrival {formatLastUpdated(eta.estimatedArrivalAt)}
               </Text>
             )}
+            {!!etaUpdatedAt && (
+              <Text style={styles.etaMeta}>
+                {etaIsStale || etaError ? 'Last estimate from ' : 'Updated at '}
+                {formatLastUpdated(new Date(etaUpdatedAt).toISOString())}
+              </Text>
+            )}
             {!!etaError && <Text style={styles.errorText}>{etaError}</Text>}
             <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={`Refresh ETA to ${selectedStop.name}`}
+              accessibilityState={{
+                busy: etaLoading,
+                disabled: etaLoading || !etaAvailable,
+              }}
               style={styles.primaryButton}
               onPress={() => requestEta(true)}
-              disabled={etaLoading}
+              disabled={etaLoading || !etaAvailable}
               activeOpacity={0.85}
             >
               {etaLoading ? (
@@ -848,7 +1014,7 @@ function LiveMapScreen({
             );
           })}
 
-        {filteredBuses.map(renderBusMarker)}
+        {mapBuses.map(renderBusMarker)}
 
         {!!userLocation && (
           <Marker
@@ -889,7 +1055,7 @@ function LiveMapScreen({
         </View>
       )}
 
-      {!loading && !error && filteredBuses.length === 0 && (
+      {!loading && !error && mapBuses.length === 0 && (
         <View style={styles.emptyOverlay}>
           <Text style={styles.emptyTitle}>No buses on the map</Text>
           <Text style={styles.emptyText}>
@@ -972,6 +1138,7 @@ const styles = StyleSheet.create({
     paddingRight: 6,
   },
   routeChip: {
+    minHeight: 44,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.white,
@@ -1152,6 +1319,7 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   stopChip: {
+    minHeight: 44,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.subtle,
@@ -1229,7 +1397,7 @@ const styles = StyleSheet.create({
   },
   primaryButton: {
     marginTop: 12,
-    height: 42,
+    minHeight: 44,
     borderRadius: 8,
     backgroundColor: COLORS.primary,
     alignItems: 'center',
@@ -1242,7 +1410,7 @@ const styles = StyleSheet.create({
   },
   secondaryButton: {
     marginTop: 12,
-    height: 40,
+    minHeight: 44,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.primary,

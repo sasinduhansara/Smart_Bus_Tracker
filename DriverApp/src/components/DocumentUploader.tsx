@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -87,9 +87,23 @@ function DocumentUploader({
   const [uploading, setUploading] = useState<RegistrationDocumentKey | null>(
     null,
   );
+  const mountedRef = useRef(true);
+  const uploadingRef = useRef<RegistrationDocumentKey | null>(null);
+  const uploadControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      uploadControllerRef.current?.abort();
+      uploadControllerRef.current = null;
+      uploadingRef.current = null;
+    };
+  }, []);
 
   const selectAndUpload = async (docType: RegistrationDocumentKey) => {
-    if (uploading) {
+    if (uploadingRef.current) {
       return;
     }
 
@@ -101,6 +115,10 @@ function DocumentUploader({
         maxHeight: 2048,
         selectionLimit: 1,
       });
+
+      if (!mountedRef.current) {
+        return;
+      }
 
       if (result.didCancel) {
         return;
@@ -125,13 +143,21 @@ function DocumentUploader({
 
       const file = createDocumentFile(asset, docType);
 
+      const uploadController = new AbortController();
+      uploadControllerRef.current = uploadController;
+      uploadingRef.current = docType;
       setUploading(docType);
 
       const response = await uploadDriverDocument({
         driverId,
         docType,
         file,
+        signal: uploadController.signal,
       });
+
+      if (!mountedRef.current) {
+        return;
+      }
 
       onDocumentUploaded(docType, response.url);
 
@@ -144,19 +170,37 @@ function DocumentUploader({
         `${selectedDocument?.label || 'Document'} uploaded successfully.`,
       );
     } catch (error) {
-      Alert.alert('Upload Failed', getErrorMessage(error));
+      if (
+        mountedRef.current &&
+        (!error || typeof error !== 'object' || !('code' in error) ||
+          error.code !== 'CANCELLED')
+      ) {
+        Alert.alert('Upload Failed', getErrorMessage(error));
+      }
     } finally {
-      setUploading(null);
+      uploadControllerRef.current = null;
+      uploadingRef.current = null;
+
+      if (mountedRef.current) {
+        setUploading(null);
+      }
     }
   };
 
   const startDocumentUpload = (docType: RegistrationDocumentKey) => {
     selectAndUpload(docType).catch(error => {
-      Alert.alert('Upload Failed', getErrorMessage(error));
+      if (mountedRef.current) {
+        Alert.alert('Upload Failed', getErrorMessage(error));
+      }
     });
   };
 
   const handleDocumentPress = (docType: RegistrationDocumentKey) => {
+    if (uploadingRef.current === docType) {
+      uploadControllerRef.current?.abort();
+      return;
+    }
+
     const existingDocument = documents.find(
       document => document.docType === docType,
     );
@@ -205,13 +249,22 @@ function DocumentUploader({
         return (
           <TouchableOpacity
             key={documentType.docType}
+            accessibilityRole="button"
+            accessibilityLabel={
+              isUploading
+                ? `Cancel ${documentType.label} upload`
+                : `${uploadedDocument?.uploadedUrl ? 'Replace' : 'Select'} ${
+                    documentType.label
+                  }`
+            }
+            accessibilityState={{ disabled: isAnotherUploadRunning, busy: isUploading }}
             style={[
               styles.documentRow,
               uploadedDocument?.uploadedUrl && styles.documentRowUploaded,
               isAnotherUploadRunning && styles.documentRowDisabled,
             ]}
             onPress={() => handleDocumentPress(documentType.docType)}
-            disabled={isUploading || isAnotherUploadRunning}
+            disabled={isAnotherUploadRunning}
             activeOpacity={0.8}
           >
             <View style={styles.documentInfo}>
@@ -225,7 +278,10 @@ function DocumentUploader({
             </View>
 
             {isUploading ? (
-              <ActivityIndicator size="small" color="#0066cc" />
+              <View style={styles.uploadAction}>
+                <ActivityIndicator size="small" color="#0066cc" />
+                <Text style={styles.actionText}>Cancel</Text>
+              </View>
             ) : (
               <Text style={styles.actionText}>
                 {uploadedDocument?.uploadedUrl ? 'Replace' : 'Select'}
@@ -297,6 +353,10 @@ const styles = StyleSheet.create({
     color: '#0066cc',
     fontWeight: '600',
     fontSize: 14,
+  },
+  uploadAction: {
+    alignItems: 'center',
+    gap: 4,
   },
 });
 

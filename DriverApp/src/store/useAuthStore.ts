@@ -11,6 +11,7 @@ import {
   loadSecureSession,
   saveSecureSession,
 } from '../services/secureSession';
+import { useTripStore } from './useTripStore';
 
 const DEFAULT_SESSION_SECONDS = 30 * 24 * 60 * 60;
 
@@ -115,6 +116,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     await clearSecureSession();
+    await useTripStore.getState().reset();
 
     set({
       session: null,

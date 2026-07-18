@@ -19,4 +19,6 @@ export type RootStackParamList = {
 
   Trips: undefined;
   Profile: undefined;
+  RouteDetails: undefined;
+  Notifications: undefined;
 };

@@ -37,18 +37,21 @@ async function resetStoredSession(): Promise<void> {
 }
 
 export async function saveSecureSession(session: AuthSession): Promise<void> {
-  cachedSession = session;
-
   try {
     await Keychain.setGenericPassword(
       SESSION_USERNAME,
       JSON.stringify(session),
       {
         service: SESSION_SERVICE,
+        accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
       },
     );
+    cachedSession = session;
   } catch {
-    // Keep in-memory session so current app run can continue.
+    cachedSession = null;
+    throw new Error(
+      'Secure storage is unavailable. Rebuild the app before signing in.',
+    );
   }
 }
 
