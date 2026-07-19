@@ -13,6 +13,12 @@ from config import (
     trips_collection,
 )
 from extensions import socketio
+from routes.bus_routes import (
+    distance_km,
+    parse_iso_timestamp,
+    parse_number,
+    parse_optional_number,
+)
 from services.driver_trip_service import (
     APPROVED_DRIVER_STATUSES,
     OPEN_TRIP_STATUSES,
@@ -40,10 +46,156 @@ ISSUE_CATEGORIES = {
 }
 ISSUE_SEVERITIES = {"low", "medium", "high", "critical"}
 MAX_ISSUE_MESSAGE_LENGTH = 1000
+MAX_TRIP_START_LOCATION_AGE_SECONDS = 30
+MAX_TRIP_START_LOCATION_FUTURE_SECONDS = 10
+MAX_TRIP_START_ACCURACY_METERS = 100
 
 
 class BusStatusConflict(Exception):
     """Raised when a newer operational status already won the write race."""
+
+
+def _trip_start_error(
+    message: str,
+    code: str,
+    status_code: int,
+    **details: Any,
+):
+    return jsonify({
+        "success": False,
+        "error": message,
+        "message": message,
+        "code": code,
+        **details,
+    }), status_code
+
+
+def _parse_trip_start_location(data: Any, now: datetime):
+    if not isinstance(data, dict) or not isinstance(data.get("location"), dict):
+        return None, _trip_start_error(
+            "A fresh GPS location is required to start this trip.",
+            "LOCATION_REQUIRED",
+            400,
+        )
+
+    raw_location = data["location"]
+    latitude = parse_number(raw_location.get("lat"), -90, 90)
+    longitude = parse_number(raw_location.get("lng"), -180, 180)
+    if latitude is None or longitude is None:
+        return None, _trip_start_error(
+            "The GPS coordinates are invalid.",
+            "LOCATION_INVALID",
+            400,
+        )
+
+    accuracy = parse_number(
+        raw_location.get("accuracy"),
+        0,
+        MAX_TRIP_START_ACCURACY_METERS,
+    )
+    if accuracy is None:
+        return None, _trip_start_error(
+            "GPS accuracy is too low. Wait for a stronger location fix.",
+            "LOCATION_ACCURACY_TOO_LOW",
+            422,
+            maximumAccuracyMeters=MAX_TRIP_START_ACCURACY_METERS,
+        )
+
+    client_timestamp = parse_iso_timestamp(raw_location.get("timestamp"))
+    if client_timestamp is None:
+        return None, _trip_start_error(
+            "A valid timezone-aware GPS timestamp is required.",
+            "LOCATION_INVALID",
+            400,
+        )
+
+    age_seconds = (now - client_timestamp).total_seconds()
+    if age_seconds > MAX_TRIP_START_LOCATION_AGE_SECONDS:
+        return None, _trip_start_error(
+            "The GPS location is stale. Request a fresh location and retry.",
+            "LOCATION_STALE",
+            409,
+            maximumAgeSeconds=MAX_TRIP_START_LOCATION_AGE_SECONDS,
+        )
+    if age_seconds < -MAX_TRIP_START_LOCATION_FUTURE_SECONDS:
+        return None, _trip_start_error(
+            "The GPS timestamp is too far in the future.",
+            "LOCATION_FUTURE",
+            409,
+        )
+
+    speed = parse_optional_number(raw_location.get("speed"), 0, 200)
+    if raw_location.get("speed") is not None and speed is None:
+        return None, _trip_start_error(
+            "The GPS speed is invalid.",
+            "LOCATION_INVALID",
+            400,
+        )
+    heading = parse_optional_number(
+        raw_location.get("heading"),
+        0,
+        359.999999,
+    )
+    if raw_location.get("heading") is not None and heading is None:
+        return None, _trip_start_error(
+            "The GPS heading is invalid.",
+            "LOCATION_INVALID",
+            400,
+        )
+
+    return {
+        "lat": latitude,
+        "lng": longitude,
+        "accuracy": accuracy,
+        "timestamp": client_timestamp,
+        "speed": speed,
+        "heading": heading,
+    }, None
+
+
+def _nearest_route_terminal(
+    location: dict[str, Any],
+    terminals: list[dict[str, Any]],
+):
+    ranked = [
+        (
+            distance_km(
+                location["lat"],
+                location["lng"],
+                terminal["latitude"],
+                terminal["longitude"],
+            )
+            * 1000,
+            terminal,
+        )
+        for terminal in terminals
+    ]
+    return min(ranked, key=lambda item: item[0])
+
+
+def _destination_route_terminal(
+    start_terminal: dict[str, Any],
+    terminals: list[dict[str, Any]],
+):
+    candidates = [
+        terminal
+        for terminal in terminals
+        if terminal["id"] != start_terminal["id"]
+    ]
+    if not candidates:
+        return None
+
+    # With two terminals this selects the opposite end. Routes with more than
+    # two configured terminals deterministically select the farthest terminal.
+    return max(
+        candidates,
+        key=lambda terminal: distance_km(
+            start_terminal["latitude"],
+            start_terminal["longitude"],
+            terminal["latitude"],
+            terminal["longitude"],
+        ),
+    )
 
 
 def _authenticated_driver():
@@ -72,26 +224,27 @@ def _approved_assignment(driver: dict[str, Any]):
     ).strip().lower()
 
     if verification_status not in APPROVED_DRIVER_STATUSES:
-        return None, None, (
-            jsonify({
-                "error": "Driver account has not been approved",
-                "verificationStatus": verification_status,
-            }),
+        return None, None, _trip_start_error(
+            "Driver account has not been approved.",
+            "DRIVER_NOT_APPROVED",
             403,
+            verificationStatus=verification_status,
         )
 
     bus_id = str(driver.get("vehicleRegistrationNumber") or "").strip()
     route_number = str(driver.get("busRouteNumber") or "").strip()
 
     if not bus_id:
-        return None, None, (
-            jsonify({"error": "No vehicle is assigned to this driver"}),
+        return None, None, _trip_start_error(
+            "No vehicle is assigned to this driver.",
+            "BUS_NOT_ASSIGNED",
             409,
         )
 
     if not route_number:
-        return None, None, (
-            jsonify({"error": "No route is assigned to this driver"}),
+        return None, None, _trip_start_error(
+            "No route is assigned to this driver.",
+            "ROUTE_NOT_ASSIGNED",
             409,
         )
 
@@ -160,6 +313,7 @@ def _persist_bus_status(
     status: str,
     trip_id: str | None,
     now: datetime,
+    location: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     existing_bus = buses_collection.find_one(
         {"bus_id": bus_id},
@@ -170,12 +324,24 @@ def _persist_bus_status(
         if isinstance(existing_bus, dict) and existing_bus.get("_id")
         else {"trackingKey": bus_id}
     )
+    concurrency_conditions: list[dict[str, Any]] = [
+        {
+            "$or": [
+                {"statusUpdatedAt": {"$lte": now}},
+                {"statusUpdatedAt": {"$exists": False}},
+            ],
+        },
+    ]
+    if location and location.get("clientTimestamp") is not None:
+        concurrency_conditions.append({
+            "$or": [
+                {"clientTimestamp": {"$lt": location["clientTimestamp"]}},
+                {"clientTimestamp": {"$exists": False}},
+            ],
+        })
     bus_filter = {
         **bus_identity,
-        "$or": [
-            {"statusUpdatedAt": {"$lte": now}},
-            {"statusUpdatedAt": {"$exists": False}},
-        ],
+        "$and": concurrency_conditions,
     }
 
     try:
@@ -188,6 +354,7 @@ def _persist_bus_status(
                 operational_status=status,
                 trip_id=trip_id,
                 now=now,
+                location=location,
             ),
             upsert=not isinstance(existing_bus, dict),
         )
@@ -200,12 +367,24 @@ def _persist_bus_status(
     ):
         raise BusStatusConflict
 
+    public_location = None
+    if location:
+        public_location = {
+            "lat": location.get("lat"),
+            "lng": location.get("lng"),
+            "speed": location.get("speed"),
+            "heading": location.get("heading"),
+            "accuracy": location.get("accuracy"),
+            "updatedAt": now.isoformat(),
+        }
+
     return build_safe_bus_payload(
         bus_id=bus_id,
         route_number=route_number,
         operational_status=status,
         trip_id=trip_id,
         status_updated_at=now,
+        location=public_location,
     )
 
 
@@ -270,26 +449,89 @@ def start_trip():
 
     route = get_route_details(route_number)
     if route is None:
-        return jsonify({
-            "error": "The assigned route does not exist",
-            "routeNumber": route_number,
-        }), 409
+        return _trip_start_error(
+            "The assigned route does not exist.",
+            "ROUTE_NOT_FOUND",
+            409,
+            routeNumber=route_number,
+        )
+
+    terminals = route.get("terminals") or []
+    if len(terminals) < 2:
+        return _trip_start_error(
+            "The assigned route does not have trip-start terminals configured.",
+            "ROUTE_TERMINALS_NOT_CONFIGURED",
+            409,
+            routeNumber=route_number,
+        )
+
+    now = utc_now()
+    data = request.get_json(silent=True) or {}
+    start_location, location_error = _parse_trip_start_location(data, now)
+    if location_error:
+        return location_error
+
+    nearest_distance_meters, start_terminal = _nearest_route_terminal(
+        start_location,
+        terminals,
+    )
+    allowed_radius_meters = float(start_terminal["startRadiusMeters"])
+    nearest_terminal_payload = {
+        "id": start_terminal["id"],
+        "name": start_terminal["name"],
+        "distanceMeters": round(nearest_distance_meters),
+        "allowedRadiusMeters": round(allowed_radius_meters),
+    }
+    if nearest_distance_meters > allowed_radius_meters:
+        return _trip_start_error(
+            "Move closer to an approved route terminal to start this trip.",
+            "OUTSIDE_START_GEOFENCE",
+            403,
+            nearestTerminal=nearest_terminal_payload,
+        )
+
+    destination_terminal = _destination_route_terminal(
+        start_terminal,
+        terminals,
+    )
+    if destination_terminal is None:
+        return _trip_start_error(
+            "The assigned route does not have a destination terminal configured.",
+            "ROUTE_TERMINALS_NOT_CONFIGURED",
+            409,
+            routeNumber=route_number,
+        )
 
     existing_trip = _find_open_trip(driver_id)
     if existing_trip:
         return jsonify({
-            "error": "An active or paused trip already exists",
+            "success": False,
+            "error": "An active or paused trip already exists.",
+            "message": "An active or paused trip already exists.",
+            "code": "ACTIVE_TRIP_EXISTS",
             "trip": serialize_trip(existing_trip),
         }), 409
 
     if _find_open_bus_trip(bus_id):
         return jsonify({
-            "error": "The assigned bus already has an active or paused trip",
+            "success": False,
+            "error": "The assigned bus already has an active or paused trip.",
+            "message": "The assigned bus already has an active or paused trip.",
             "code": "BUS_TRIP_CONFLICT",
         }), 409
 
-    now = utc_now()
-    stops = route.get("stops") or []
+    direction = f'{start_terminal["id"]}_to_{destination_terminal["id"]}'
+    initial_trip_location = {
+        "lat": start_location["lat"],
+        "lng": start_location["lng"],
+        "accuracy": start_location["accuracy"],
+        "timestamp": start_location["timestamp"],
+    }
+    if start_location.get("speed") is not None:
+        initial_trip_location["speed"] = start_location["speed"]
+    if start_location.get("heading") is not None:
+        initial_trip_location["heading"] = start_location["heading"]
+
     trip = {
         "driverId": driver_id,
         "activeKey": driver_id,
@@ -298,17 +540,27 @@ def start_trip():
         "vehicleRegistrationNumber": bus_id,
         "routeNumber": route_number,
         "routeName": str(route.get("name") or ""),
-        "origin": str(stops[0].get("name") if stops else ""),
-        "destination": str(stops[-1].get("name") if stops else ""),
+        "origin": start_terminal["name"],
+        "destination": destination_terminal["name"],
+        "startTerminalId": start_terminal["id"],
+        "startTerminalName": start_terminal["name"],
+        "destinationTerminalId": destination_terminal["id"],
+        "destinationTerminalName": destination_terminal["name"],
+        "direction": direction,
+        "startLatitude": start_location["lat"],
+        "startLongitude": start_location["lng"],
+        "startAccuracy": start_location["accuracy"],
         "status": "active",
         "startedAt": now,
         "createdAt": now,
         "updatedAt": now,
+        "lastLocation": initial_trip_location,
+        "lastLocationAt": now,
         "durationSeconds": 0,
         "activeDurationSeconds": 0,
         "totalPausedSeconds": 0,
         "distanceKm": 0,
-        "locationUpdateCount": 0,
+        "locationUpdateCount": 1,
     }
 
     try:
@@ -317,11 +569,16 @@ def start_trip():
         existing_trip = _find_open_trip(driver_id)
         if not existing_trip:
             return jsonify({
-                "error": "The assigned bus already has an active or paused trip",
+                "success": False,
+                "error": "The assigned bus already has an active or paused trip.",
+                "message": "The assigned bus already has an active or paused trip.",
                 "code": "BUS_TRIP_CONFLICT",
             }), 409
         return jsonify({
-            "error": "An active or paused trip already exists",
+            "success": False,
+            "error": "An active or paused trip already exists.",
+            "message": "An active or paused trip already exists.",
+            "code": "ACTIVE_TRIP_EXISTS",
             "trip": serialize_trip(existing_trip) if existing_trip else None,
         }), 409
 
@@ -350,6 +607,15 @@ def start_trip():
             status="active",
             trip_id=trip_id,
             now=now,
+            location={
+                "lat": start_location["lat"],
+                "lng": start_location["lng"],
+                "speed": start_location.get("speed"),
+                "heading": start_location.get("heading"),
+                "accuracy": start_location["accuracy"],
+                "clientTimestamp": start_location["timestamp"],
+                "updatedAt": now,
+            },
         )
     except BusStatusConflict:
         trips_collection.delete_one({"_id": result.inserted_id})

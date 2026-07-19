@@ -49,6 +49,30 @@ def make_route(stops=None):
 
 
 class RouteSearchServiceTests(unittest.TestCase):
+    def test_route_terminals_are_normalized_with_a_configurable_default_radius(self):
+        route = make_route()
+        route["terminals"] = [
+            {
+                "id": "origin",
+                "name": "Origin Terminal",
+                "latitude": 7.4688,
+                "longitude": 80.0401,
+            },
+            {
+                "id": "destination",
+                "name": "Destination Terminal",
+                "latitude": 7.4863,
+                "longitude": 80.3647,
+                "startRadiusMeters": 750,
+            },
+        ]
+
+        normalized = route_service.normalize_route(route)
+
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized["terminals"][0]["startRadiusMeters"], 500)
+        self.assertEqual(normalized["terminals"][1]["startRadiusMeters"], 750)
+
     @patch.object(route_service, "get_all_routes")
     def test_casefolds_and_returns_only_public_result_fields(self, get_routes):
         get_routes.return_value = [make_route()]

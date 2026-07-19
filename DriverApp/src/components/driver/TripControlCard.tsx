@@ -18,6 +18,12 @@ import {
 
 export type TripLifecycleStatus =
   | 'idle'
+  | 'checking_location'
+  | 'checking_terminal'
+  | 'outside_geofence'
+  | 'permission_required'
+  | 'accuracy_low'
+  | 'terminal_unavailable'
   | 'starting'
   | 'active'
   | 'interrupted'
@@ -41,6 +47,8 @@ export interface TripControlCardProps {
   onPause?: () => void;
   onResume?: () => void;
   onEnd?: () => void;
+  onSecondaryAction?: () => void;
+  secondaryActionLabel?: string;
 }
 
 interface StatusPresentation {
@@ -56,6 +64,42 @@ const statusPresentation: Record<TripLifecycleStatus, StatusPresentation> = {
     icon: 'radio-button-off-outline',
     backgroundColor: driverColors.surfaceMuted,
     foregroundColor: driverColors.textMuted,
+  },
+  checking_location: {
+    label: 'Checking location',
+    icon: 'locate-outline',
+    backgroundColor: driverColors.infoSoft,
+    foregroundColor: driverColors.info,
+  },
+  checking_terminal: {
+    label: 'Checking terminal',
+    icon: 'navigate-outline',
+    backgroundColor: driverColors.infoSoft,
+    foregroundColor: driverColors.info,
+  },
+  outside_geofence: {
+    label: 'Too far from terminal',
+    icon: 'location-outline',
+    backgroundColor: driverColors.warningSoft,
+    foregroundColor: driverColors.warning,
+  },
+  permission_required: {
+    label: 'Location permission required',
+    icon: 'lock-closed-outline',
+    backgroundColor: driverColors.errorSoft,
+    foregroundColor: driverColors.error,
+  },
+  accuracy_low: {
+    label: 'Location accuracy low',
+    icon: 'locate-outline',
+    backgroundColor: driverColors.warningSoft,
+    foregroundColor: driverColors.warning,
+  },
+  terminal_unavailable: {
+    label: 'Route terminal unavailable',
+    icon: 'map-outline',
+    backgroundColor: driverColors.errorSoft,
+    foregroundColor: driverColors.error,
   },
   starting: {
     label: 'Starting trip',
@@ -114,6 +158,8 @@ const statusPresentation: Record<TripLifecycleStatus, StatusPresentation> = {
 };
 
 const transientStatuses: TripLifecycleStatus[] = [
+  'checking_location',
+  'checking_terminal',
   'starting',
   'pausing',
   'resuming',
@@ -133,15 +179,27 @@ export function TripControlCard({
   onPause,
   onResume,
   onEnd,
+  onSecondaryAction,
+  secondaryActionLabel,
 }: TripControlCardProps) {
   const presentation = statusPresentation[status];
   const busy = transientStatuses.includes(status);
   const actionDisabled = disabled || busy;
 
   const primaryAction =
-    status === 'idle' || status === 'completed' || status === 'error'
+    status === 'idle' || status === 'completed'
       ? onStart
         ? { label: 'Start trip', icon: 'play', callback: onStart }
+        : null
+      : status === 'outside_geofence' ||
+        status === 'permission_required' ||
+        status === 'accuracy_low'
+      ? onStart
+        ? { label: 'Retry location', icon: 'locate', callback: onStart }
+        : null
+      : status === 'terminal_unavailable' || status === 'error'
+      ? onStart
+        ? { label: 'Retry preflight', icon: 'refresh', callback: onStart }
         : null
       : status === 'active'
       ? onPause
@@ -287,6 +345,27 @@ export function TripControlCard({
             {presentation.label}…
           </Text>
         </View>
+      ) : null}
+
+      {secondaryActionLabel && onSecondaryAction ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={secondaryActionLabel}
+          disabled={actionDisabled}
+          onPress={onSecondaryAction}
+          style={({ pressed }) => [
+            styles.secondaryButton,
+            pressed && styles.pressed,
+            actionDisabled && styles.disabled,
+          ]}
+        >
+          <Icon
+            name="settings-outline"
+            size={driverSizes.iconMedium}
+            color={driverColors.teal700}
+          />
+          <Text style={styles.secondaryButtonText}>{secondaryActionLabel}</Text>
+        </Pressable>
       ) : null}
 
       {(status === 'active' ||
@@ -482,6 +561,23 @@ const styles = StyleSheet.create({
   },
   endButtonText: {
     color: driverColors.error,
+    fontSize: driverTypography.body,
+    fontWeight: driverTypography.weights.bold,
+  },
+  secondaryButton: {
+    minHeight: 48,
+    marginTop: driverSpacing.sm,
+    borderRadius: driverRadii.control,
+    borderWidth: 1,
+    borderColor: driverColors.teal700,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: driverSpacing.sm,
+    paddingHorizontal: driverSpacing.md,
+  },
+  secondaryButtonText: {
+    color: driverColors.teal700,
     fontSize: driverTypography.body,
     fontWeight: driverTypography.weights.bold,
   },

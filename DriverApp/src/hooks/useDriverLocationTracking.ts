@@ -79,6 +79,11 @@ interface UseDriverLocationTrackingOptions {
   onTrackingRejected?: (error: ApiError) => void;
 }
 
+export interface StartTrackingOptions {
+  /** The trip-start endpoint already persisted and broadcast this snapshot. */
+  initialLocationAlreadyAccepted?: boolean;
+}
+
 interface GeolocationService {
   requestAuthorization: (
     authorizationLevel: 'always' | 'whenInUse',
@@ -301,6 +306,7 @@ export function useDriverLocationTracking(
   onTrackingRejectedRef.current = onTrackingRejected;
   const mountedRef = useRef(true);
   const permissionStatusRef = useRef<LocationPermissionStatus>('unknown');
+  const preflightErrorRef = useRef<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
   const desiredTrackingRef = useRef(false);
   const requestInProgressRef = useRef(false);
@@ -607,6 +613,7 @@ export function useDriverLocationTracking(
   );
 
   const prepareLocation = useCallback(async () => {
+    preflightErrorRef.current = null;
     if (mountedRef.current) {
       setIsStarting(true);
       setError(null);
@@ -662,6 +669,7 @@ export function useDriverLocationTracking(
       if (mountedRef.current) {
         setError(message);
       }
+      preflightErrorRef.current = message;
       return null;
     } finally {
       if (mountedRef.current) {
@@ -670,8 +678,16 @@ export function useDriverLocationTracking(
     }
   }, [acceptPosition]);
 
+  const getPreflightFailure = useCallback(() => ({
+    permissionStatus: permissionStatusRef.current,
+    error: preflightErrorRef.current,
+  }), []);
+
   const startTracking = useCallback(
-    async (preparedSnapshot?: DriverLocationSnapshot): Promise<boolean> => {
+    async (
+      preparedSnapshot?: DriverLocationSnapshot,
+      trackingOptions: StartTrackingOptions = {},
+    ): Promise<boolean> => {
       if (watchIdRef.current !== null) {
         desiredTrackingRef.current = true;
         if (lastSuccessfulSendRef.current > 0) {
@@ -709,6 +725,17 @@ export function useDriverLocationTracking(
       }
 
       desiredTrackingRef.current = true;
+      const backendAcceptedAt = trackingOptions.initialLocationAlreadyAccepted
+        ? new Date()
+        : null;
+
+      // Seed throttling before watch creation so even a synchronous native
+      // callback cannot immediately upload the accepted start fix twice.
+      if (backendAcceptedAt) {
+        lastSuccessfulSendRef.current = backendAcceptedAt.getTime();
+        lastSentSnapshotRef.current = snapshot;
+        pendingSnapshotRef.current = null;
+      }
 
       try {
         watchIdRef.current = geolocation.watchPosition(
@@ -731,6 +758,18 @@ export function useDriverLocationTracking(
         if (mountedRef.current) {
           setIsTracking(true);
           setIsStarting(true);
+        }
+
+        if (backendAcceptedAt) {
+          startHeartbeat(geolocation);
+
+          if (mountedRef.current) {
+            setLastSentAt(backendAcceptedAt);
+            setTransmissionStatus('online');
+            setError(null);
+            setIsStarting(false);
+          }
+          return true;
         }
 
         const initialResponse = await sendSnapshot(snapshot, true);
@@ -766,6 +805,10 @@ export function useDriverLocationTracking(
         return true;
       } catch (startError) {
         desiredTrackingRef.current = false;
+        if (backendAcceptedAt) {
+          lastSuccessfulSendRef.current = 0;
+          lastSentSnapshotRef.current = null;
+        }
 
         if (mountedRef.current) {
           setIsTracking(false);
@@ -871,6 +914,7 @@ export function useDriverLocationTracking(
     lastLocation,
     error,
     prepareLocation,
+    getPreflightFailure,
     startTracking,
     stopTracking,
     flushLatestLocation,

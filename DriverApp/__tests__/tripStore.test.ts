@@ -25,7 +25,11 @@ import {
   saveActiveTrip,
 } from '../src/services/secureTrip';
 import { useTripStore } from '../src/store/useTripStore';
-import type { DriverTrip, TripMutationResponse } from '../src/types';
+import type {
+  DriverTrip,
+  TripLocation,
+  TripMutationResponse,
+} from '../src/types';
 
 const mockedGetActiveTrip = jest.mocked(getActiveTrip);
 const mockedStartTrip = jest.mocked(startDriverTrip);
@@ -36,6 +40,14 @@ const mockedLoadCachedTrip = jest.mocked(loadActiveTrip);
 const mockedSaveTrip = jest.mocked(saveActiveTrip);
 const mockedClearTrip = jest.mocked(clearActiveTrip);
 const DRIVER_ID = 'driver-1';
+const START_LOCATION: TripLocation = {
+  lat: 7.4688,
+  lng: 80.0401,
+  speed: 0,
+  heading: 0,
+  accuracy: 8,
+  timestamp: '2026-07-18T10:00:00.000Z',
+};
 
 function trip(status: DriverTrip['status'] = 'active'): DriverTrip {
   return {
@@ -141,10 +153,33 @@ describe('active trip store', () => {
   test('prevents a duplicate start before making an API request', async () => {
     useTripStore.setState({ trip: trip(), phase: 'active' });
 
-    await expect(useTripStore.getState().start()).rejects.toThrow(
+    await expect(useTripStore.getState().start(START_LOCATION)).rejects.toThrow(
       'unfinished trip already exists',
     );
     expect(mockedStartTrip).not.toHaveBeenCalled();
+  });
+
+  test('posts the prepared location and prevents a concurrent duplicate start', async () => {
+    let resolveStart: ((value: TripMutationResponse) => void) | undefined;
+    const startResponse = mutation('started', trip());
+    mockedStartTrip.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          resolveStart = resolve;
+        }),
+    );
+
+    const firstStart = useTripStore.getState().start(START_LOCATION);
+    await Promise.resolve();
+
+    await expect(
+      useTripStore.getState().start(START_LOCATION),
+    ).rejects.toThrow('unfinished trip already exists');
+    expect(mockedStartTrip).toHaveBeenCalledTimes(1);
+    expect(mockedStartTrip).toHaveBeenCalledWith(START_LOCATION);
+
+    resolveStart?.(startResponse);
+    await expect(firstStart).resolves.toEqual(startResponse.trip);
   });
 
   test('persists pause and resume transitions', async () => {

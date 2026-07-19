@@ -17,12 +17,19 @@ class BusStop(RoutePoint):
     sequence: int
 
 
+class RouteTerminal(RoutePoint):
+    id: str
+    name: str
+    startRadiusMeters: float
+
+
 class RouteDetails(TypedDict):
     routeNumber: str
     name: str
     direction: str
     polyline: list[RoutePoint]
     stops: list[BusStop]
+    terminals: list[RouteTerminal]
 
 
 class RouteSummary(TypedDict):
@@ -106,6 +113,32 @@ def _normalize_stop(value: Any) -> BusStop | None:
     }
 
 
+def _normalize_terminal(value: Any) -> RouteTerminal | None:
+    point = _normalize_point(value)
+
+    if point is None or not isinstance(value, dict):
+        return None
+
+    terminal_id = str(value.get("id") or value.get("_id") or "").strip()
+    name = str(value.get("name") or "").strip()
+    start_radius_meters = _parse_float(
+        value.get("startRadiusMeters", 500),
+        1,
+        10000,
+    )
+
+    if not terminal_id or not name or start_radius_meters is None:
+        return None
+
+    return {
+        "id": terminal_id,
+        "name": name,
+        "latitude": point["latitude"],
+        "longitude": point["longitude"],
+        "startRadiusMeters": start_radius_meters,
+    }
+
+
 def normalize_route(value: Any) -> RouteDetails | None:
     if not isinstance(value, dict):
         return None
@@ -137,6 +170,15 @@ def normalize_route(value: Any) -> RouteDetails | None:
 
     stops.sort(key=lambda stop: stop["sequence"])
 
+    terminals = [
+        terminal
+        for terminal in (
+            _normalize_terminal(terminal)
+            for terminal in value.get("terminals", [])
+        )
+        if terminal is not None
+    ]
+
     if len(polyline) < 2 or not stops:
         return None
 
@@ -146,6 +188,7 @@ def normalize_route(value: Any) -> RouteDetails | None:
         "direction": direction,
         "polyline": polyline,
         "stops": stops,
+        "terminals": terminals,
     }
 
 
@@ -159,6 +202,7 @@ def _load_routes_from_database() -> list[RouteDetails]:
             "direction": 1,
             "polyline": 1,
             "stops": 1,
+            "terminals": 1,
         },
     )
 
@@ -182,10 +226,7 @@ def get_all_routes() -> list[RouteDetails]:
             raise
         database_routes = []
 
-    if database_routes:
-        return database_routes
-
-    return [
+    fallback_routes = [
         route
         for route in (
             normalize_route(route)
@@ -193,6 +234,22 @@ def get_all_routes() -> list[RouteDetails]:
         )
         if route is not None
     ]
+
+    if not fallback_routes:
+        return database_routes
+
+    # Local development can fill missing canonical routes without masking
+    # valid MongoDB route documents. Production deployments should seed the
+    # routes collection and leave ENABLE_DEVELOPMENT_ROUTE_FALLBACK disabled.
+    routes_by_number = {
+        route["routeNumber"]: route
+        for route in fallback_routes
+    }
+    routes_by_number.update({
+        route["routeNumber"]: route
+        for route in database_routes
+    })
+    return list(routes_by_number.values())
 
 
 def get_route_details(route_number: str) -> RouteDetails | None:

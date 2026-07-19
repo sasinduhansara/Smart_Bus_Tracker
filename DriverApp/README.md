@@ -1,5 +1,12 @@
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
+## Live-trip location assumption
+
+The driver's foreground phone location is treated as the assigned bus location
+only while the backend trip is active. The driver is expected to remain inside
+the assigned bus while operating the trip. The app cannot independently verify
+that the phone remains inside the vehicle.
+
 # Getting Started
 
 > **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.

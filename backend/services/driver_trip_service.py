@@ -138,6 +138,22 @@ def serialize_trip(trip: dict[str, Any]) -> dict[str, Any]:
         "distanceKm": non_negative_float(trip.get("distanceKm", 0)),
     }
 
+    for field in (
+        "startTerminalId",
+        "startTerminalName",
+        "destinationTerminalId",
+        "destinationTerminalName",
+        "direction",
+    ):
+        value = str(trip.get(field) or "").strip()
+        if value:
+            payload[field] = value
+
+    for field in ("startLatitude", "startLongitude", "startAccuracy"):
+        value = trip.get(field)
+        if value is not None:
+            payload[field] = value
+
     for field in ("pausedAt", "resumedAt", "completedAt"):
         value = trip.get(field)
         serialized_value = to_iso(value) or (str(value) if value else None)
@@ -175,7 +191,14 @@ def build_safe_bus_payload(
     }
 
     if location:
-        for field in ("lat", "lng", "speed", "heading", "updatedAt"):
+        for field in (
+            "lat",
+            "lng",
+            "speed",
+            "heading",
+            "accuracy",
+            "updatedAt",
+        ):
             if location.get(field) is not None:
                 payload[field] = location[field]
 
@@ -190,8 +213,9 @@ def bus_operational_update(
     operational_status: str,
     trip_id: str | None,
     now: datetime,
+    location: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    update: dict[str, Any] = {
         "$set": {
             "bus_id": bus_id,
             "trackingKey": bus_id,
@@ -208,3 +232,26 @@ def bus_operational_update(
             "createdAt": now,
         },
     }
+
+    if location:
+        for field in (
+            "lat",
+            "lng",
+            "speed",
+            "heading",
+            "accuracy",
+            "clientTimestamp",
+            "updatedAt",
+        ):
+            if location.get(field) is not None:
+                update["$set"][field] = location[field]
+
+        missing_optional_fields = {
+            field: ""
+            for field in ("speed", "heading")
+            if location.get(field) is None
+        }
+        if missing_optional_fields:
+            update["$unset"] = missing_optional_fields
+
+    return update

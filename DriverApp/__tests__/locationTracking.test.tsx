@@ -124,6 +124,26 @@ describe('foreground location watcher lifecycle', () => {
     expect(mockGeolocation.clearWatch).toHaveBeenCalledWith(7);
   });
 
+  test('starts one watcher without re-uploading a start location already accepted by backend', async () => {
+    let prepared: Awaited<ReturnType<TrackingHook['prepareLocation']>> = null;
+    let started = false;
+
+    await ReactTestRenderer.act(async () => {
+      prepared = (await currentHook?.prepareLocation()) || null;
+      started =
+        (await currentHook?.startTracking(prepared || undefined, {
+          initialLocationAlreadyAccepted: true,
+        })) || false;
+    });
+
+    expect(prepared).not.toBeNull();
+    expect(started).toBe(true);
+    expect(mockGeolocation.watchPosition).toHaveBeenCalledTimes(1);
+    expect(mockedSendLocation).not.toHaveBeenCalled();
+    expect(currentHook?.isTracking).toBe(true);
+    expect(currentHook?.transmissionStatus).toBe('online');
+  });
+
   test('does not create a watcher when foreground permission is denied', async () => {
     mockedPermissions.check.mockResolvedValue(false);
     mockedPermissions.request.mockResolvedValue(

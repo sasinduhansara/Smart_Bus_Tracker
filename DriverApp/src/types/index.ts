@@ -158,6 +158,14 @@ export interface DriverTrip {
   pausedDurationSeconds?: number;
   distanceKm: number;
   lastLocation?: TripLocation;
+  startTerminalId?: string;
+  startTerminalName?: string;
+  destinationTerminalId?: string;
+  destinationTerminalName?: string;
+  direction?: string;
+  startLatitude?: number;
+  startLongitude?: number;
+  startAccuracy?: number;
 }
 
 export interface ActiveTripResponse {
@@ -187,12 +195,19 @@ export interface DriverRouteStop extends CoordinatePoint {
   sequence: number;
 }
 
+export interface DriverRouteTerminal extends CoordinatePoint {
+  id: string;
+  name: string;
+  startRadiusMeters: number;
+}
+
 export interface DriverRouteDetails {
   routeNumber: string;
   name: string;
   direction: string;
   polyline: CoordinatePoint[];
   stops: DriverRouteStop[];
+  terminals?: DriverRouteTerminal[];
 }
 
 export interface RouteDetailsResponse {

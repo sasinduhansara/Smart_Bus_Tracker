@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Linking,
   RefreshControl,
   ScrollView,
   StatusBar,
@@ -45,6 +46,13 @@ import { useAuthStore } from '../store/useAuthStore';
 import { useTripStore } from '../store/useTripStore';
 import type { IssueCategory, IssueSeverity, VerificationStatus } from '../types';
 import type { RootStackParamList } from '../types/navigation';
+import {
+  executeTripStart,
+  presentGpsPreflightError,
+  presentTripStartError,
+  type TripStartErrorPresentation,
+  type TripStartPreflightStatus,
+} from '../utils/tripStart';
 import {
   driverColors,
   driverRadii,
@@ -117,6 +125,10 @@ export default function DriverHomeScreen() {
   const [issueCategory, setIssueCategory] = useState<IssueCategory>();
   const [submittingIssue, setSubmittingIssue] = useState(false);
   const [clock, setClock] = useState(Date.now());
+  const [tripStartStatus, setTripStartStatus] =
+    useState<TripStartPreflightStatus>('idle');
+  const [tripStartError, setTripStartError] =
+    useState<TripStartErrorPresentation | null>(null);
   const restoreAttemptedRef = useRef(false);
   const approvalSyncInFlightRef = useRef(false);
 
@@ -254,6 +266,10 @@ export default function DriverHomeScreen() {
     gps.isTracking && gps.transmissionStatus === 'online';
 
   const tripControlStatus: TripLifecycleStatus = useMemo(() => {
+    if (!trip && tripStartStatus !== 'idle' && tripPhase !== 'starting') {
+      return tripStartStatus;
+    }
+
     switch (tripPhase) {
       case 'starting':
       case 'pausing':
@@ -273,44 +289,81 @@ export default function DriverHomeScreen() {
       default:
         return 'idle';
     }
-  }, [gps.isStarting, gpsFeedLive, trip, tripPhase]);
+  }, [gps.isStarting, gpsFeedLive, trip, tripPhase, tripStartStatus]);
 
   const ensureDashboardReady = useCallback(async () => {
-    if (dashboard.connectionStatus === 'online' && dashboard.home) {
-      return dashboard.home;
-    }
-
+    // Approval and assignments can change from the admin console while this
+    // screen is open. Always refresh before starting so a cached pending
+    // response cannot incorrectly block an already-approved driver.
     return dashboard.load(true);
   }, [dashboard]);
 
   const handleStartTrip = useCallback(async () => {
-    if (trip) {
+    if (
+      trip ||
+      tripPhase === 'starting' ||
+      tripStartStatus === 'checking_location' ||
+      tripStartStatus === 'checking_terminal'
+    ) {
       Alert.alert('Trip already open', 'Resume or end the unfinished trip first.');
       return;
     }
 
+    setTripStartError(null);
+    setTripStartStatus('checking_terminal');
+
     const currentHome = await ensureDashboardReady();
 
     if (!currentHome) {
+      setTripStartStatus('error');
+      setTripStartError({
+        status: 'error',
+        title: 'Backend unavailable',
+        message: 'Reconnect to the backend before starting.',
+        canOpenSettings: false,
+      });
       Alert.alert('Backend unavailable', 'Reconnect to the backend before starting.');
       return;
     }
 
+    const verificationStatus = String(
+      currentHome?.driver.verificationStatus || '',
+    )
+      .trim()
+      .toLowerCase();
     const approved =
-      currentHome?.driver.verificationStatus === 'approved' ||
-      currentHome?.driver.verificationStatus === 'verified';
+      verificationStatus === 'approved' || verificationStatus === 'verified';
 
     if (!approved) {
+      setTripStartStatus('error');
+      setTripStartError({
+        status: 'error',
+        title: 'Approval required',
+        message: 'Only an approved driver can start a trip.',
+        canOpenSettings: false,
+      });
       Alert.alert('Approval required', 'Only an approved driver can start a trip.');
       return;
     }
 
     if (!currentHome?.vehicle.number) {
+      setTripStartStatus('error');
+      setTripStartError({
+        status: 'error',
+        title: 'No bus assigned',
+        message: 'Ask operations to assign a vehicle first.',
+        canOpenSettings: false,
+      });
       Alert.alert('No bus assigned', 'Ask operations to assign a vehicle first.');
       return;
     }
 
     if (!currentHome.vehicle.route) {
+      const presentation = presentTripStartError(
+        new ApiError('The assigned route does not exist.', 409, 'ROUTE_NOT_FOUND'),
+      );
+      setTripStartStatus(presentation.status);
+      setTripStartError(presentation);
       Alert.alert(
         'Route unavailable',
         'The assigned route must exist in the backend before this trip can start.',
@@ -326,6 +379,11 @@ export default function DriverHomeScreen() {
           await getAssignedRoute(currentHome.vehicle.route)
         ).route;
       } catch {
+        const presentation = presentTripStartError(
+          new ApiError('The assigned route does not exist.', 409, 'ROUTE_NOT_FOUND'),
+        );
+        setTripStartStatus(presentation.status);
+        setTripStartError(presentation);
         Alert.alert(
           'Route unavailable',
           'The assigned route must exist in the backend before this trip can start.',
@@ -334,16 +392,46 @@ export default function DriverHomeScreen() {
       }
     }
 
-    const snapshot = await gps.prepareLocation();
-
-    if (!snapshot) {
-      Alert.alert('GPS not ready', gps.error || 'A reliable GPS fix is required.');
+    if (!confirmedRoute.terminals || confirmedRoute.terminals.length < 2) {
+      const presentation = presentTripStartError(
+        new ApiError(
+          'The assigned route does not have trip-start terminals configured.',
+          409,
+          'ROUTE_TERMINALS_NOT_CONFIGURED',
+        ),
+      );
+      setTripStartStatus(presentation.status);
+      setTripStartError(presentation);
+      Alert.alert(presentation.title, presentation.message);
       return;
     }
 
     try {
-      const startedTrip = await startTrip();
-      const watcherStarted = await gps.startTracking(snapshot);
+      const result = await executeTripStart({
+        prepareLocation: gps.prepareLocation,
+        mapLocation: toTripLocation,
+        startTrip,
+        startTracking: gps.startTracking,
+        onStage: setTripStartStatus,
+      });
+
+      if (result.status === 'location_unavailable') {
+        const failure = gps.getPreflightFailure();
+        const presentation = presentGpsPreflightError(
+          failure.permissionStatus,
+          failure.error,
+        );
+        setTripStartStatus(presentation.status);
+        setTripStartError(presentation);
+        Alert.alert(presentation.title, presentation.message);
+        return;
+      }
+
+      const {
+        trip: startedTrip,
+        snapshot,
+        watcherStarted,
+      } = result;
 
       if (!watcherStarted) {
         await pauseTrip();
@@ -355,14 +443,16 @@ export default function DriverHomeScreen() {
         return;
       }
 
+      setTripStartStatus('idle');
+      setTripStartError(null);
       dashboard.refreshEta(startedTrip.busId, snapshot, true).catch(() => undefined);
       dashboard.load(true).catch(() => undefined);
       Alert.alert('Trip started', 'Live location is now shared with passengers.');
     } catch (error) {
-      Alert.alert(
-        'Could not start trip',
-        error instanceof Error ? error.message : 'Please retry.',
-      );
+      const presentation = presentTripStartError(error);
+      setTripStartStatus(presentation.status);
+      setTripStartError(presentation);
+      Alert.alert(presentation.title, presentation.message);
     }
   }, [
     dashboard,
@@ -372,7 +462,18 @@ export default function DriverHomeScreen() {
     route,
     startTrip,
     trip,
+    tripPhase,
+    tripStartStatus,
   ]);
+
+  const handleOpenLocationSettings = useCallback(() => {
+    Linking.openSettings().catch(() => {
+      Alert.alert(
+        'Settings unavailable',
+        'Open device settings manually and enable precise location for Gamana.lk Driver.',
+      );
+    });
+  }, []);
 
   const handlePauseTrip = useCallback(async () => {
     try {
@@ -773,19 +874,34 @@ export default function DriverHomeScreen() {
               onEnd={handleEndTrip}
               onPause={handlePauseTrip}
               onResume={handleResumeTrip}
+              onSecondaryAction={
+                tripStartError?.canOpenSettings
+                  ? handleOpenLocationSettings
+                  : undefined
+              }
               onStart={handleStartTrip}
+              secondaryActionLabel={
+                tripStartError?.canOpenSettings
+                  ? 'Open location settings'
+                  : undefined
+              }
               status={tripControlStatus}
               statusMessage={
                 trip
                   ? `${trip.origin || origin?.name || 'Route start'} → ${
                       trip.destination || destination?.name || 'Route destination'
                     }`
-                  : 'Preflight checks approval, assignment, route, backend, permission, and GPS.'
+                  : tripStartStatus === 'checking_location'
+                  ? 'Getting a fresh, precise GPS fix from this device…'
+                  : tripStartStatus === 'checking_terminal'
+                  ? 'Verifying this location against the assigned route terminals…'
+                  : tripStartError?.message ||
+                    'Preflight checks approval, assignment, route, backend, permission, and GPS.'
               }
               tripLabel={trip ? `Trip ${trip.id.slice(-8).toUpperCase()}` : undefined}
               warningMessage={
                 tripError ||
-                gps.error ||
+                (!tripStartError ? gps.error : undefined) ||
                 (restoredFromCache
                   ? 'Trip state is cached and must be confirmed with the backend.'
                   : undefined)

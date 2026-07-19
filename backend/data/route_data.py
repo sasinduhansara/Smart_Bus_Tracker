@@ -4,9 +4,107 @@ from typing import Any
 
 _DEVELOPMENT_ROUTES: list[dict[str, Any]] = [
     {
+        "routeNumber": "138",
+        "name": "Kottawa - Pettah",
+        "direction": "Inbound via Maharagama",
+        "polyline": [
+            {"latitude": 6.8161, "longitude": 79.8710},
+            {"latitude": 6.8480, "longitude": 79.9265},
+            {"latitude": 6.8649, "longitude": 79.8997},
+            {"latitude": 6.9344, "longitude": 79.8580},
+        ],
+        "stops": [
+            {
+                "id": "kottawa",
+                "name": "Kottawa",
+                "latitude": 6.8161,
+                "longitude": 79.8710,
+                "sequence": 1,
+            },
+            {
+                "id": "maharagama",
+                "name": "Maharagama Stop",
+                "latitude": 6.8480,
+                "longitude": 79.9265,
+                "sequence": 2,
+            },
+            {
+                "id": "nugegoda",
+                "name": "Nugegoda Junction",
+                "latitude": 6.8649,
+                "longitude": 79.8997,
+                "sequence": 3,
+            },
+            {
+                "id": "pettah",
+                "name": "Pettah",
+                "latitude": 6.9344,
+                "longitude": 79.8580,
+                "sequence": 4,
+            },
+        ],
+    },
+    {
+        "routeNumber": "122",
+        "name": "Avissawella - Pettah",
+        "direction": "Inbound via Homagama",
+        "polyline": [
+            {"latitude": 6.9550, "longitude": 80.2110},
+            {"latitude": 6.8440, "longitude": 80.0030},
+            {"latitude": 6.8161, "longitude": 79.8710},
+            {"latitude": 6.9344, "longitude": 79.8580},
+        ],
+        "stops": [
+            {
+                "id": "avissawella",
+                "name": "Avissawella",
+                "latitude": 6.9550,
+                "longitude": 80.2110,
+                "sequence": 1,
+            },
+            {
+                "id": "homagama",
+                "name": "Homagama Town",
+                "latitude": 6.8440,
+                "longitude": 80.0030,
+                "sequence": 2,
+            },
+            {
+                "id": "kottawa",
+                "name": "Kottawa",
+                "latitude": 6.8161,
+                "longitude": 79.8710,
+                "sequence": 3,
+            },
+            {
+                "id": "pettah",
+                "name": "Pettah",
+                "latitude": 6.9344,
+                "longitude": 79.8580,
+                "sequence": 4,
+            },
+        ],
+    },
+    {
         "routeNumber": "123",
         "name": "Kuliyapitiya - Kurunegala",
         "direction": "outbound",
+        "terminals": [
+            {
+                "id": "kuliyapitiya",
+                "name": "Kuliyapitiya Bus Stand",
+                "latitude": 7.4688,
+                "longitude": 80.0401,
+                "startRadiusMeters": 500,
+            },
+            {
+                "id": "kurunegala",
+                "name": "Kurunegala Bus Stand",
+                "latitude": 7.4863,
+                "longitude": 80.3647,
+                "startRadiusMeters": 500,
+            },
+        ],
         "polyline": [
             {"latitude": 7.4688, "longitude": 80.0401},
             {"latitude": 7.4745, "longitude": 80.0792},

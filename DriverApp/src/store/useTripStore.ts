@@ -12,7 +12,7 @@ import {
   loadActiveTrip,
   saveActiveTrip,
 } from '../services/secureTrip';
-import type { DriverTrip } from '../types';
+import type { DriverTrip, TripLocation } from '../types';
 
 export type TripPhase =
   | 'idle'
@@ -31,7 +31,7 @@ interface TripState {
   error: string | null;
   restoredFromCache: boolean;
   restore: (driverId: string) => Promise<DriverTrip | null>;
-  start: () => Promise<DriverTrip>;
+  start: (location: TripLocation) => Promise<DriverTrip>;
   pause: () => Promise<DriverTrip>;
   resume: () => Promise<DriverTrip>;
   complete: () => Promise<DriverTrip>;
@@ -113,15 +113,15 @@ export const useTripStore = create<TripState>((set, get) => ({
     }
   },
 
-  start: async () => {
-    if (get().trip) {
+  start: async location => {
+    if (get().trip || get().phase === 'starting') {
       throw new Error('An unfinished trip already exists.');
     }
 
     set({ phase: 'starting', error: null });
 
     try {
-      const response = await startDriverTrip();
+      const response = await startDriverTrip(location);
       await saveActiveTrip(response.trip);
       set({ trip: response.trip, phase: 'active', restoredFromCache: false });
       return response.trip;

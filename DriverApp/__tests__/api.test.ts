@@ -71,15 +71,43 @@ describe('Driver API contracts', () => {
         response(200, { status: 'completed', trip: {}, bus: {} }),
       );
 
-    await startDriverTrip();
+    await startDriverTrip(location);
     await completeDriverTrip('trip/unsafe');
 
     expect(fetchMock.mock.calls[0][0]).toMatch(/\/api\/driver\/trips\/start$/);
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({});
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ location });
     expect(fetchMock.mock.calls[1][0]).toMatch(
       /\/api\/driver\/trips\/trip%2Funsafe\/complete$/,
     );
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({});
+  });
+
+  test('preserves safe nearest-terminal details from a rejected start', async () => {
+    fetchMock.mockResolvedValue(
+      response(403, {
+        success: false,
+        code: 'OUTSIDE_START_GEOFENCE',
+        message: 'Move closer to an approved route terminal.',
+        nearestTerminal: {
+          id: 'kuliyapitiya',
+          name: 'Kuliyapitiya Bus Stand',
+          distanceMeters: 1840,
+          allowedRadiusMeters: 500,
+        },
+      }),
+    );
+
+    await expect(startDriverTrip(location)).rejects.toMatchObject({
+      status: 403,
+      code: 'OUTSIDE_START_GEOFENCE',
+      details: {
+        nearestTerminal: {
+          name: 'Kuliyapitiya Bus Stand',
+          distanceMeters: 1840,
+          allowedRadiusMeters: 500,
+        },
+      },
+    });
   });
 
   test('notifies auth state on an authenticated 401 response', async () => {

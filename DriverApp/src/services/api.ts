@@ -55,10 +55,19 @@ export interface DriverLocationResponse {
   bus: LiveBusLocation;
 }
 
+export interface NearestTerminalDetails {
+  id?: string;
+  name: string;
+  distanceMeters: number;
+  allowedRadiusMeters: number;
+}
+
 interface ApiErrorResponse {
   error?: string;
   message?: string;
   code?: string;
+  nearestTerminal?: NearestTerminalDetails;
+  maximumAccuracyMeters?: number;
 }
 
 const REQUEST_TIMEOUT_MS = 15000;
@@ -69,12 +78,19 @@ let unauthorizedHandler: (() => void | Promise<void>) | null = null;
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
+  readonly details?: ApiErrorResponse;
 
-  constructor(message: string, status = 0, code?: string) {
+  constructor(
+    message: string,
+    status = 0,
+    code?: string,
+    details?: ApiErrorResponse,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -168,6 +184,9 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
         ),
         response.status,
         responseCode,
+        data && typeof data === 'object'
+          ? (data as ApiErrorResponse)
+          : undefined,
       );
     }
 
@@ -420,8 +439,10 @@ export function getTripHistory(limit = 30): Promise<TripHistoryResponse> {
   return get<TripHistoryResponse>(`/api/driver/trips?limit=${safeLimit}`);
 }
 
-export function startDriverTrip(): Promise<TripMutationResponse> {
-  return post<TripMutationResponse>('/api/driver/trips/start', {});
+export function startDriverTrip(
+  location: TripLocation,
+): Promise<TripMutationResponse> {
+  return post<TripMutationResponse>('/api/driver/trips/start', { location });
 }
 
 export function pauseDriverTrip(tripId: string): Promise<TripMutationResponse> {
