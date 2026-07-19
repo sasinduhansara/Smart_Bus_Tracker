@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+
 import type {
   DocumentFile,
   DriverRegistrationForm,
@@ -7,29 +8,28 @@ import type {
   RegistrationDocumentKey,
   UploadedDocumentRef,
 } from '../types/registration';
+
 import { normalizeMobile } from '../utils/validation';
 
-const INITIAL_FORM: DriverRegistrationForm = {
+const createInitialForm = (): DriverRegistrationForm => ({
   fullName: '',
   nic: '',
   mobile: '',
   email: '',
   password: '',
-  conductorName: '',
   driverNtcRegistrationNumber: '',
-  busNtcPermitNumber: '',
   drivingLicenseNumber: '',
   drivingLicenseExpiry: '',
-  busRouteNumber: '',
-  vehicleRegistrationNumber: '',
   depotOperator: '',
   currentStep: 1,
-};
+});
 
 const toUploadedDocumentRef = (
   file?: DocumentFile,
 ): UploadedDocumentRef | null => {
-  if (!file?.url || !file.storagePath) return null;
+  if (!file?.url || !file.storagePath) {
+    return null;
+  }
 
   return {
     fileName: file.storagePath,
@@ -52,7 +52,8 @@ interface DriverRegistrationStore {
 
 export const useDriverRegistrationStore = create<DriverRegistrationStore>(
   (set, get) => ({
-    form: INITIAL_FORM,
+    form: createInitialForm(),
+
     updateField: (field, value) =>
       set(state => ({
         form: {
@@ -60,6 +61,7 @@ export const useDriverRegistrationStore = create<DriverRegistrationStore>(
           [field]: value,
         },
       })),
+
     setDocument: (field, file) =>
       set(state => ({
         form: {
@@ -67,6 +69,7 @@ export const useDriverRegistrationStore = create<DriverRegistrationStore>(
           [field]: file,
         },
       })),
+
     removeDocument: field =>
       set(state => ({
         form: {
@@ -74,6 +77,7 @@ export const useDriverRegistrationStore = create<DriverRegistrationStore>(
           [field]: undefined,
         },
       })),
+
     nextStep: () =>
       set(state => ({
         form: {
@@ -81,6 +85,7 @@ export const useDriverRegistrationStore = create<DriverRegistrationStore>(
           currentStep: Math.min(state.form.currentStep + 1, 4),
         },
       })),
+
     previousStep: () =>
       set(state => ({
         form: {
@@ -88,9 +93,32 @@ export const useDriverRegistrationStore = create<DriverRegistrationStore>(
           currentStep: Math.max(state.form.currentStep - 1, 1),
         },
       })),
-    resetRegistration: () => set({ form: INITIAL_FORM }),
+
+    resetRegistration: () => {
+      set({ form: createInitialForm() });
+    },
+
     getPayload: () => {
       const form = get().form;
+      const depotOperator = form.depotOperator.trim();
+      const documents = Object.fromEntries(
+        (
+          [
+            ['nicFront', toUploadedDocumentRef(form.nicFront)],
+            ['nicBack', toUploadedDocumentRef(form.nicBack)],
+            [
+              'drivingLicenseFront',
+              toUploadedDocumentRef(form.drivingLicenseFront),
+            ],
+            [
+              'drivingLicenseBack',
+              toUploadedDocumentRef(form.drivingLicenseBack),
+            ],
+          ] as const
+        ).filter((entry): entry is [RegistrationDocumentKey, UploadedDocumentRef] =>
+          entry[1] !== null,
+        ),
+      );
 
       return {
         fullName: form.fullName.trim(),
@@ -98,22 +126,13 @@ export const useDriverRegistrationStore = create<DriverRegistrationStore>(
         mobile: normalizeMobile(form.mobile),
         email: form.email.trim().toLowerCase(),
         password: form.password,
-        conductorName: form.conductorName.trim(),
-        driverNtcRegistrationNumber: form.driverNtcRegistrationNumber.trim(),
-        busNtcPermitNumber: form.busNtcPermitNumber.trim(),
-        drivingLicenseNumber: form.drivingLicenseNumber.trim(),
-        drivingLicenseExpiry: form.drivingLicenseExpiry,
-        busRouteNumber: form.busRouteNumber.trim(),
-        vehicleRegistrationNumber: form.vehicleRegistrationNumber
+        driverNtcRegistrationNumber: form.driverNtcRegistrationNumber
           .trim()
           .toUpperCase(),
-        depotOperator: form.depotOperator.trim(),
-        documents: {
-          nicFront: toUploadedDocumentRef(form.nicFront),
-          nicBack: toUploadedDocumentRef(form.nicBack),
-          drivingLicenseFront: toUploadedDocumentRef(form.drivingLicenseFront),
-          drivingLicenseBack: toUploadedDocumentRef(form.drivingLicenseBack),
-        },
+        drivingLicenseNumber: form.drivingLicenseNumber.trim().toUpperCase(),
+        drivingLicenseExpiry: form.drivingLicenseExpiry,
+        ...(depotOperator ? { depotOperator } : {}),
+        documents,
         kycStatus: 'NOT_SUBMITTED',
       };
     },

@@ -85,6 +85,23 @@ def required_documents():
     }
 
 
+
+def registration_payload(**overrides):
+    payload = {
+        "fullName": "Test Driver",
+        "nic": "200012345678",
+        "mobile": "0712345678",
+        "email": "driver@example.com",
+        "password": "secure123",
+        "driverNtcRegistrationNumber": "D-123",
+        "drivingLicenseNumber": "L-123",
+        "drivingLicenseExpiry": "2099-01-01",
+        "depotOperator": "Test Depot",
+        "documents": {},
+    }
+    payload.update(overrides)
+    return payload
+
 def route_details():
     return {
         "routeNumber": "123",
@@ -1405,22 +1422,7 @@ class DriverBackendContractTests(unittest.TestCase):
 
         response = self.client.post(
             "/api/driver/register/request-otp",
-            json={
-                "fullName": "Test Driver",
-                "nic": "200012345678",
-                "mobile": "0712345678",
-                "email": "driver@example.com",
-                "password": "secure123",
-                "conductorName": "Test Conductor",
-                "driverNtcRegistrationNumber": "D-123",
-                "busNtcPermitNumber": "B-123",
-                "drivingLicenseNumber": "L-123",
-                "drivingLicenseExpiry": "2099-01-01",
-                "busRouteNumber": "138",
-                "vehicleRegistrationNumber": "NC-1234",
-                "depotOperator": "Test Depot",
-                "documents": {},
-            },
+            json=registration_payload(),
         )
 
         self.assertEqual(response.status_code, 502)
@@ -1435,34 +1437,157 @@ class DriverBackendContractTests(unittest.TestCase):
     def test_registration_rejects_forged_document_references(self, send_sms):
         response = self.client.post(
             "/api/driver/register/request-otp",
-            json={
-                "fullName": "Test Driver",
-                "nic": "200012345678",
-                "mobile": "0712345678",
-                "email": "driver@example.com",
-                "password": "secure123",
-                "conductorName": "Test Conductor",
-                "driverNtcRegistrationNumber": "D-123",
-                "busNtcPermitNumber": "B-123",
-                "drivingLicenseNumber": "L-123",
-                "drivingLicenseExpiry": "2099-01-01",
-                "busRouteNumber": "138",
-                "vehicleRegistrationNumber": "NC-1234",
-                "depotOperator": "Test Depot",
-                "documents": {
+            json=registration_payload(
+                documents={
                     "nicFront": {
                         "fileName": "another-driver/forged.jpg",
                         "url": "https://example.com/forged.jpg",
                         "mimeType": "image/jpeg",
                     },
                 },
-            },
+            ),
         )
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("storage path", response.get_json()["error"])
         send_sms.assert_not_called()
         test_config.otp_collection.update_one.assert_not_called()
+
+    @patch.object(auth_routes, "get_storage_url", side_effect=RuntimeError)
+    def test_registration_treats_null_only_documents_as_optional(
+        self,
+        get_storage_url,
+    ):
+        documents, error = auth_routes.sanitize_registration_documents(
+            {
+                "nicFront": None,
+                "nicBack": None,
+                "drivingLicenseFront": None,
+                "drivingLicenseBack": None,
+            },
+            "94712345678",
+        )
+
+        self.assertEqual(documents, {})
+        self.assertIsNone(error)
+        get_storage_url.assert_not_called()
+
+    def test_registration_rejects_legacy_operational_fields(self):
+        response = self.client.post(
+            "/api/driver/register/request-otp",
+            json=registration_payload(
+                busRouteNumber="123",
+                vehicleRegistrationNumber="NC-1234",
+                busNtcPermitNumber="P-123",
+                conductorName="Legacy Conductor",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(
+            payload["code"],
+            "UNSUPPORTED_REGISTRATION_FIELDS",
+        )
+        self.assertEqual(
+            set(payload["fields"]),
+            {
+                "busNtcPermitNumber",
+                "busRouteNumber",
+                "conductorName",
+                "vehicleRegistrationNumber",
+            },
+        )
+        test_config.otp_collection.find_one_and_update.assert_not_called()
+
+    @patch.object(auth_routes, "consume_otp_record")
+    def test_registration_verify_creates_clean_driver_record(
+        self,
+        consume_otp_record,
+    ):
+        consume_otp_record.return_value = (
+            {
+                "_id": ObjectId("64b000000000000000000012"),
+                "registration_data": {
+                    "fullName": "Test Driver",
+                    "nic": "200012345678",
+                    "email": "driver@example.com",
+                    "password": "hashed-password",
+                    "driverNtcRegistrationNumber": "D-123",
+                    "drivingLicenseNumber": "L-123",
+                    "drivingLicenseExpiry": "2099-01-01",
+                    "depotOperator": "Test Depot",
+                    "documents": {},
+                },
+            },
+            None,
+        )
+        test_config.drivers_collection.find_one.return_value = None
+        test_config.drivers_collection.insert_one.return_value = SimpleNamespace(
+            inserted_id=ObjectId(DRIVER_ID),
+        )
+
+        response = self.client.post(
+            "/api/driver/register/verify-otp",
+            json={
+                "mobile": "0712345678",
+                "otp": "123456",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        stored_driver = (
+            test_config.drivers_collection.insert_one.call_args.args[0]
+        )
+        self.assertEqual(
+            stored_driver["driverNtcRegistrationNumberKey"],
+            "D-123",
+        )
+        self.assertEqual(
+            stored_driver["drivingLicenseNumberKey"],
+            "L-123",
+        )
+        self.assertEqual(stored_driver["verificationStatus"], "pending")
+        self.assertEqual(stored_driver["kycStatus"], "NOT_SUBMITTED")
+        self.assertIn("createdAt", stored_driver)
+        self.assertIn("updatedAt", stored_driver)
+
+        for removed_field in (
+            "conductorName",
+            "busNtcPermitNumber",
+            "busRouteNumber",
+            "vehicleRegistrationNumber",
+            "vehicleAssignmentKey",
+        ):
+            self.assertNotIn(removed_field, stored_driver)
+
+    def test_registration_availability_checks_driver_credentials(self):
+        test_config.drivers_collection.find_one.side_effect = [
+            None,
+            None,
+            None,
+            {"_id": ObjectId(DRIVER_ID)},
+            None,
+        ]
+
+        response = self.client.post(
+            "/api/driver/register/check-availability",
+            json={
+                "mobile": "0712345678",
+                "email": "driver@example.com",
+                "nic": "200012345678",
+                "driverNtcRegistrationNumber": "D-123",
+                "drivingLicenseNumber": "L-123",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload["available"])
+        self.assertEqual(
+            payload["conflicts"]["driverNtcRegistrationNumber"],
+            "This driver NTC registration number is already registered",
+        )
 
     def test_notifications_are_private_and_scoped_to_token_subject(self):
         test_config.drivers_collection.find_one.return_value = approved_driver()

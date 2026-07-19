@@ -29,13 +29,9 @@ export interface DriverRegistrationForm {
   mobile: string;
   email: string;
   password: string;
-  conductorName: string;
   driverNtcRegistrationNumber: string;
-  busNtcPermitNumber: string;
   drivingLicenseNumber: string;
   drivingLicenseExpiry: string;
-  busRouteNumber: string;
-  vehicleRegistrationNumber: string;
   depotOperator: string;
   nicFront?: DocumentFile;
   nicBack?: DocumentFile;
@@ -53,10 +49,32 @@ export type RegistrationErrors = Partial<
   Record<DriverRegistrationTextField | 'confirmation', string>
 >;
 
-export type DriverRegistrationPayload = Omit<
-  DriverRegistrationForm,
-  RegistrationDocumentKey | 'currentStep'
-> & {
-  documents: Partial<Record<RegistrationDocumentKey, UploadedDocumentRef | null>>;
+export type RegistrationAvailabilityField = 'nic' | 'mobile' | 'email';
+
+export type RegistrationAvailabilityState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'conflict'
+  | 'error';
+
+export type RegistrationAvailabilityStates = Record<
+  RegistrationAvailabilityField,
+  RegistrationAvailabilityState
+>;
+
+export interface DriverRegistrationPayload {
+  fullName: string;
+  nic: string;
+  mobile: string;
+  email: string;
+  password: string;
+  driverNtcRegistrationNumber: string;
+  drivingLicenseNumber: string;
+  drivingLicenseExpiry: string;
+  depotOperator?: string;
+  documents: Partial<
+    Record<RegistrationDocumentKey, UploadedDocumentRef | null>
+  >;
   kycStatus: 'NOT_SUBMITTED';
-};
+}

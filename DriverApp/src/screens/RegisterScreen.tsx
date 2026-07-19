@@ -1,4 +1,5 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+
 import {
   ActivityIndicator,
   Alert,
@@ -7,32 +8,39 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+
 import AuthScreenShell from '../components/AuthScreenShell';
 import RegisterDocumentsScreen from './RegisterDocumentsScreen';
 import RegisterDriverDetailsScreen from './RegisterDriverDetailsScreen';
 import RegisterPersonalScreen from './RegisterPersonalScreen';
 import RegisterReviewScreen from './RegisterReviewScreen';
+
 import {
   checkDriverRegistrationAvailability,
   requestRegisterOTP,
 } from '../services/api';
+
 import { useDriverRegistrationStore } from '../store/useDriverRegistrationStore';
+
 import type { RootStackParamList } from '../types/navigation';
+
 import type {
   DocumentFile,
   DriverRegistrationTextField,
+  RegistrationAvailabilityField,
+  RegistrationAvailabilityStates,
   RegistrationDocumentKey,
   RegistrationErrors,
 } from '../types/registration';
+
 import {
-  isValidBusRoute,
   isValidEmail,
   isValidMobile,
   isValidNIC,
   isValidPassword,
   isTodayOrFutureDate,
-  isValidVehicleRegistrationNumber,
 } from '../utils/validation';
 
 type RegisterScreenProps = NativeStackScreenProps<
@@ -40,12 +48,29 @@ type RegisterScreenProps = NativeStackScreenProps<
   'Register'
 >;
 
+type AvailabilityRequest = Parameters<
+  typeof checkDriverRegistrationAvailability
+>[0];
+
+const AVAILABILITY_CHECK_DELAY_MS = 700;
+
+const INITIAL_AVAILABILITY: RegistrationAvailabilityStates = {
+  nic: 'idle',
+  mobile: 'idle',
+  email: 'idle',
+};
+
 const STEP_TITLES: Record<number, string> = {
   1: 'Personal Information',
-  2: 'Driver & Bus Details',
-  3: 'Optional Documents',
+  2: 'Driver Qualifications',
+  3: 'KYC Documents',
   4: 'Review & Submit',
 };
+
+const isAvailabilityField = (
+  field: DriverRegistrationTextField,
+): field is RegistrationAvailabilityField =>
+  field === 'nic' || field === 'mobile' || field === 'email';
 
 function RegisterScreen({ navigation }: RegisterScreenProps) {
   const form = useDriverRegistrationStore(state => state.form);
@@ -61,104 +86,305 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
   const [errors, setErrors] = useState<RegistrationErrors>({});
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [availability, setAvailability] =
+    useState<RegistrationAvailabilityStates>(INITIAL_AVAILABILITY);
+
+  const timersRef = useRef<
+    Partial<
+      Record<RegistrationAvailabilityField, ReturnType<typeof setTimeout>>
+    >
+  >({});
+
+  const requestIdsRef = useRef<Record<RegistrationAvailabilityField, number>>({
+    nic: 0,
+    mobile: 0,
+    email: 0,
+  });
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    const requestIds = requestIdsRef.current;
+
+    return () => {
+      Object.values(timers).forEach(timer => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      });
+
+      (Object.keys(requestIds) as RegistrationAvailabilityField[]).forEach(
+        field => {
+          requestIds[field] += 1;
+        },
+      );
+    };
+  }, []);
 
   const clearError = useCallback((field: keyof RegistrationErrors) => {
-    setErrors(prev => ({ ...prev, [field]: undefined }));
+    setErrors(previousErrors => ({
+      ...previousErrors,
+      [field]: undefined,
+    }));
   }, []);
+
+  const setFieldAvailability = useCallback(
+    (
+      field: RegistrationAvailabilityField,
+      state: RegistrationAvailabilityStates[RegistrationAvailabilityField],
+    ) => {
+      setAvailability(previousAvailability => ({
+        ...previousAvailability,
+        [field]: state,
+      }));
+    },
+    [],
+  );
+
+  const isAvailabilityValueValid = useCallback(
+    (field: RegistrationAvailabilityField, value: string): boolean => {
+      if (field === 'nic') {
+        return isValidNIC(value);
+      }
+
+      if (field === 'mobile') {
+        return isValidMobile(value);
+      }
+
+      return isValidEmail(value);
+    },
+    [],
+  );
+
+  const createAvailabilityRequest = useCallback(
+    (
+      field: RegistrationAvailabilityField,
+      rawValue: string,
+    ): AvailabilityRequest => {
+      const request: AvailabilityRequest = {
+        mobile: '',
+        email: '',
+        nic: '',
+      };
+
+      if (field === 'nic') {
+        request.nic = rawValue.trim().toUpperCase();
+      } else if (field === 'mobile') {
+        request.mobile = rawValue.trim();
+      } else {
+        request.email = rawValue.trim().toLowerCase();
+      }
+
+      return request;
+    },
+    [],
+  );
+
+  const cancelPendingCheck = useCallback(
+    (field: RegistrationAvailabilityField) => {
+      const timer = timersRef.current[field];
+
+      if (timer) {
+        clearTimeout(timer);
+        delete timersRef.current[field];
+      }
+
+      requestIdsRef.current[field] += 1;
+    },
+    [],
+  );
+
+  const scheduleAvailabilityCheck = useCallback(
+    (field: RegistrationAvailabilityField, rawValue: string) => {
+      cancelPendingCheck(field);
+
+      if (!isAvailabilityValueValid(field, rawValue)) {
+        setFieldAvailability(field, 'idle');
+        return;
+      }
+
+      const requestId = requestIdsRef.current[field];
+      setFieldAvailability(field, 'checking');
+
+      timersRef.current[field] = setTimeout(async () => {
+        try {
+          const result = await checkDriverRegistrationAvailability(
+            createAvailabilityRequest(field, rawValue),
+          );
+
+          if (requestId !== requestIdsRef.current[field]) {
+            return;
+          }
+
+          const conflict = result.conflicts?.[field];
+
+          if (conflict) {
+            setFieldAvailability(field, 'conflict');
+            setErrors(previousErrors => ({
+              ...previousErrors,
+              [field]: conflict,
+            }));
+            return;
+          }
+
+          setFieldAvailability(field, 'available');
+          setErrors(previousErrors => ({
+            ...previousErrors,
+            [field]: undefined,
+          }));
+        } catch {
+          if (requestId !== requestIdsRef.current[field]) {
+            return;
+          }
+
+          setFieldAvailability(field, 'error');
+        } finally {
+          delete timersRef.current[field];
+        }
+      }, AVAILABILITY_CHECK_DELAY_MS);
+    },
+    [
+      cancelPendingCheck,
+      createAvailabilityRequest,
+      isAvailabilityValueValid,
+      setFieldAvailability,
+    ],
+  );
 
   const handleChangeText = useCallback(
     (field: DriverRegistrationTextField) => (value: string) => {
       updateField(field, value);
       clearError(field);
+
+      if (isAvailabilityField(field)) {
+        scheduleAvailabilityCheck(field, value);
+      }
     },
-    [clearError, updateField],
+    [clearError, scheduleAvailabilityCheck, updateField],
   );
 
-  const validatePersonalStep = (): boolean => {
+  const getPersonalStepErrors = (): RegistrationErrors => {
     const newErrors: RegistrationErrors = {};
 
-    if (!form.fullName.trim()) newErrors.fullName = 'Full name is required';
+    if (!form.fullName.trim()) {
+      newErrors.fullName = 'Full name is required';
+    }
+
     if (!isValidNIC(form.nic)) {
       newErrors.nic = 'Enter a valid NIC (9 digits + V/X or 12 digits)';
+    } else if (availability.nic === 'conflict') {
+      newErrors.nic = 'This NIC is already registered';
     }
+
     if (!isValidMobile(form.mobile)) {
       newErrors.mobile = 'Enter a valid mobile number';
+    } else if (availability.mobile === 'conflict') {
+      newErrors.mobile = 'This mobile number is already registered';
     }
+
     if (!isValidEmail(form.email)) {
       newErrors.email = 'Enter a valid email address';
+    } else if (availability.email === 'conflict') {
+      newErrors.email = 'This email is already registered';
     }
+
     if (!isValidPassword(form.password)) {
       newErrors.password = 'Use at least 8 characters with a letter and number';
     }
-    if (!form.conductorName.trim()) {
-      newErrors.conductorName = 'Conductor name is required';
-    }
 
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    return newErrors;
   };
 
-  const validateDriverDetailsStep = (): boolean => {
+  const getDriverDetailsStepErrors = (): RegistrationErrors => {
     const newErrors: RegistrationErrors = {};
 
     if (!form.driverNtcRegistrationNumber.trim()) {
       newErrors.driverNtcRegistrationNumber =
         'Driver NTC registration number is required';
     }
-    if (!form.busNtcPermitNumber.trim()) {
-      newErrors.busNtcPermitNumber =
-        'Vehicle NTC/passenger service permit number is required';
-    }
+
     if (!form.drivingLicenseNumber.trim()) {
       newErrors.drivingLicenseNumber = 'Driving license number is required';
     }
+
     if (!form.drivingLicenseExpiry.trim()) {
       newErrors.drivingLicenseExpiry = 'Driving license expiry is required';
     } else if (!isTodayOrFutureDate(form.drivingLicenseExpiry)) {
       newErrors.drivingLicenseExpiry =
         'Driving license expiry cannot be a past date';
     }
-    if (!isValidBusRoute(form.busRouteNumber)) {
-      newErrors.busRouteNumber = 'Bus route number is required';
-    }
-    if (!isValidVehicleRegistrationNumber(form.vehicleRegistrationNumber)) {
-      newErrors.vehicleRegistrationNumber =
-        'Vehicle registration number is required';
-    }
-    if (!form.depotOperator.trim()) {
-      newErrors.depotOperator = 'Depot/Operator name is required';
-    }
+
+    return newErrors;
+  };
+
+  const validatePersonalStep = (): boolean => {
+    const newErrors = getPersonalStepErrors();
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const validateDriverDetailsStep = (): boolean => {
+    const newErrors = getDriverDetailsStepErrors();
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const validateRequiredSteps = (): boolean => {
+    const newErrors = {
+      ...getPersonalStepErrors(),
+      ...getDriverDetailsStepErrors(),
+    };
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const validateRequiredSteps = (): boolean =>
-    validatePersonalStep() && validateDriverDetailsStep();
+  const checkAllAvailability = async (): Promise<boolean> => {
+    const fields: RegistrationAvailabilityField[] = ['nic', 'mobile', 'email'];
 
-  const checkPersonalAvailability = async (): Promise<boolean> => {
+    fields.forEach(cancelPendingCheck);
     setLoading(true);
+
     try {
       const result = await checkDriverRegistrationAvailability({
         mobile: form.mobile,
-        email: form.email,
+        email: form.email.trim().toLowerCase(),
         nic: form.nic,
-        vehicleRegistrationNumber: form.vehicleRegistrationNumber || undefined,
       });
 
-      if (result.available) return true;
+      fields.forEach(field => {
+        const value = String(form[field] ?? '');
 
-      setErrors(prev => ({
-        ...prev,
+        if (!isAvailabilityValueValid(field, value)) {
+          setFieldAvailability(field, 'idle');
+          return;
+        }
+
+        setFieldAvailability(
+          field,
+          result.conflicts?.[field] ? 'conflict' : 'available',
+        );
+      });
+
+      if (result.available) {
+        return true;
+      }
+
+      setErrors(previousErrors => ({
+        ...previousErrors,
         ...result.conflicts,
       }));
       return false;
     } catch (error) {
+      fields.forEach(field => {
+        setFieldAvailability(field, 'error');
+      });
+
       const message =
         error instanceof Error
           ? error.message
           : 'Could not check registration details';
-      Alert.alert('Error', message);
+
+      Alert.alert('Registration Check Failed', message);
       return false;
     } finally {
       setLoading(false);
@@ -167,12 +393,17 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
 
   const handleNext = async () => {
     if (form.currentStep === 1) {
-      if (!validatePersonalStep()) return;
-      if (!(await checkPersonalAvailability())) return;
+      if (!validatePersonalStep()) {
+        return;
+      }
+
+      if (!(await checkAllAvailability())) {
+        return;
+      }
     }
-    if (form.currentStep === 2) {
-      if (!validateDriverDetailsStep()) return;
-      if (!(await checkPersonalAvailability())) return;
+
+    if (form.currentStep === 2 && !validateDriverDetailsStep()) {
+      return;
     }
 
     setErrors({});
@@ -181,7 +412,11 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
 
   const handlePrevious = () => {
     setErrors({});
-    if (form.currentStep === 4) setConfirmed(false);
+
+    if (form.currentStep === 4) {
+      setConfirmed(false);
+    }
+
     previousStep();
   };
 
@@ -193,18 +428,28 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
   };
 
   const handleToggleConfirmed = () => {
-    setConfirmed(prev => !prev);
+    setConfirmed(previousValue => !previousValue);
     clearError('confirmation');
   };
 
   const handleSubmit = async () => {
     if (!confirmed) {
-      setErrors({ confirmation: 'Please confirm the information is correct' });
+      setErrors({
+        confirmation: 'Please confirm the information is correct',
+      });
       return;
     }
-    if (!validateRequiredSteps()) return;
+
+    if (!validateRequiredSteps()) {
+      return;
+    }
+
+    if (!(await checkAllAvailability())) {
+      return;
+    }
 
     setLoading(true);
+
     try {
       const payload = getPayload();
       await requestRegisterOTP(payload);
@@ -216,7 +461,8 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : 'Could not connect to server';
-      Alert.alert('Error', message);
+
+      Alert.alert('Registration Failed', message);
     } finally {
       setLoading(false);
     }
@@ -228,6 +474,7 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
         <RegisterPersonalScreen
           form={form}
           errors={errors}
+          availability={availability}
           onChangeText={handleChangeText}
         />
       );
@@ -267,6 +514,20 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
     );
   };
 
+  const availabilityBusy =
+    availability.nic === 'checking' ||
+    availability.mobile === 'checking' ||
+    availability.email === 'checking';
+
+  const availabilityConflict =
+    availability.nic === 'conflict' ||
+    availability.mobile === 'conflict' ||
+    availability.email === 'conflict';
+
+  const nextButtonDisabled =
+    loading ||
+    (form.currentStep === 1 && (availabilityBusy || availabilityConflict));
+
   return (
     <AuthScreenShell scroll contentContainerStyle={styles.container}>
       <View style={styles.headerCard}>
@@ -292,20 +553,26 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
 
         {form.currentStep < 3 ? (
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[
+              styles.primaryButton,
+              nextButtonDisabled && styles.primaryButtonDisabled,
+            ]}
             onPress={handleNext}
-            disabled={loading}
+            disabled={nextButtonDisabled}
             activeOpacity={0.88}
           >
             <Text style={styles.primaryButtonText}>
-              {loading && form.currentStep === 1 ? 'Checking...' : 'Next'}
+              {loading || availabilityBusy ? 'Checking...' : 'Next'}
             </Text>
           </TouchableOpacity>
         ) : null}
 
         {form.currentStep > 1 ? (
           <TouchableOpacity
-            style={styles.backButton}
+            style={[
+              styles.backButton,
+              form.currentStep === 3 && styles.documentsBackButton,
+            ]}
             onPress={handlePrevious}
             disabled={loading}
             activeOpacity={0.88}
@@ -318,9 +585,9 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
           <View style={styles.loadingRow}>
             <ActivityIndicator color="#0F172A" />
             <Text style={styles.loadingText}>
-              {form.currentStep === 1
-                ? 'Checking registration details...'
-                : 'Requesting OTP...'}
+              {form.currentStep === 4
+                ? 'Requesting OTP...'
+                : 'Checking registration details...'}
             </Text>
           </View>
         ) : null}
@@ -336,9 +603,7 @@ function RegisterScreen({ navigation }: RegisterScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    paddingBottom: 40,
-  },
+  container: { paddingBottom: 40 },
   headerCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.13)',
     borderRadius: 30,
@@ -416,7 +681,12 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     elevation: 8,
   },
-  primaryButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  primaryButtonDisabled: { opacity: 0.55 },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
   backButton: {
     borderWidth: 1,
     borderColor: '#CBD5E1',
@@ -425,9 +695,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 16,
   },
-  backButtonText: { color: '#0F172A', fontSize: 15, fontWeight: '800' },
+  documentsBackButton: {
+    marginTop: 14,
+  },
+  backButtonText: {
+    color: '#0F172A',
+    fontSize: 15,
+    fontWeight: '800',
+  },
   confirmationError: {
-    color: '#d00',
+    color: '#DC2626',
     fontSize: 12,
     marginTop: -6,
     marginBottom: 12,

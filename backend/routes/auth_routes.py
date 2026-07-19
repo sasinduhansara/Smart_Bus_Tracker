@@ -48,6 +48,13 @@ REQUIRED_DOCUMENT_TYPES = {
     "drivingLicenseBack",
 }
 
+LEGACY_OPERATIONAL_REGISTRATION_FIELDS = {
+    "conductorName",
+    "busNtcPermitNumber",
+    "busRouteNumber",
+    "vehicleRegistrationNumber",
+}
+
 
 def otp_hash(mobile, purpose, otp):
     message = f"{mobile}:{purpose}:{otp}".encode("utf-8")
@@ -426,7 +433,8 @@ def get_registration_conflicts(
     mobile=None,
     email=None,
     nic=None,
-    vehicle_registration_number=None,
+    driver_ntc_registration_number=None,
+    driving_license_number=None,
 ):
     conflicts = {}
 
@@ -440,43 +448,63 @@ def get_registration_conflicts(
         }):
             conflicts["mobile"] = "This mobile number is already registered"
 
-    if isinstance(email, str) and email:
-        email = email.strip()
+    if isinstance(email, str) and email.strip():
+        normalized_email = email.strip().casefold()
         if drivers_collection.find_one({
             "$or": [
-                {"emailKey": email.casefold()},
-                exact_case_insensitive_query("email", email),
+                {"emailKey": normalized_email},
+                exact_case_insensitive_query("email", email.strip()),
             ],
         }):
             conflicts["email"] = "This email is already registered"
 
-    if isinstance(nic, str) and nic:
-        nic = nic.strip()
+    if isinstance(nic, str) and nic.strip():
+        normalized_nic = nic.strip().upper()
         if drivers_collection.find_one({
             "$or": [
-                {"nicKey": nic.upper()},
-                exact_case_insensitive_query("nic", nic),
+                {"nicKey": normalized_nic},
+                exact_case_insensitive_query("nic", normalized_nic),
             ],
         }):
             conflicts["nic"] = "This NIC is already registered"
 
-    if isinstance(vehicle_registration_number, str) and vehicle_registration_number:
-        vehicle_registration_number = vehicle_registration_number.strip()
+    if (
+        isinstance(driver_ntc_registration_number, str)
+        and driver_ntc_registration_number.strip()
+    ):
+        normalized_ntc = driver_ntc_registration_number.strip().upper()
         if drivers_collection.find_one({
             "$or": [
-                {"vehicleAssignmentKey": vehicle_registration_number.upper()},
+                {"driverNtcRegistrationNumberKey": normalized_ntc},
                 exact_case_insensitive_query(
-                    "vehicleRegistrationNumber",
-                    vehicle_registration_number,
+                    "driverNtcRegistrationNumber",
+                    normalized_ntc,
                 ),
             ],
         }):
-            conflicts["vehicleRegistrationNumber"] = (
-                "This vehicle registration number is already assigned"
+            conflicts["driverNtcRegistrationNumber"] = (
+                "This driver NTC registration number is already registered"
+            )
+
+    if (
+        isinstance(driving_license_number, str)
+        and driving_license_number.strip()
+    ):
+        normalized_license = driving_license_number.strip().upper()
+        if drivers_collection.find_one({
+            "$or": [
+                {"drivingLicenseNumberKey": normalized_license},
+                exact_case_insensitive_query(
+                    "drivingLicenseNumber",
+                    normalized_license,
+                ),
+            ],
+        }):
+            conflicts["drivingLicenseNumber"] = (
+                "This driving license number is already registered"
             )
 
     return conflicts
-
 
 def is_today_or_future_date(value):
     try:
@@ -503,6 +531,14 @@ def sanitize_registration_documents(documents, mobile):
     if not isinstance(documents, dict):
         return None, "documents must be an object"
 
+    provided_documents = {
+        document_type: documents.get(document_type)
+        for document_type in REQUIRED_DOCUMENT_TYPES
+        if documents.get(document_type) is not None
+    }
+    if not provided_documents:
+        return {}, None
+
     try:
         storage_url = urlparse(get_storage_url())
     except RuntimeError:
@@ -519,10 +555,7 @@ def sanitize_registration_documents(documents, mobile):
     }
     sanitized = {}
 
-    for document_type in REQUIRED_DOCUMENT_TYPES:
-        document = documents.get(document_type)
-        if document is None:
-            continue
+    for document_type, document in provided_documents.items():
         if not isinstance(document, dict):
             return None, f"{document_type} document reference is invalid"
 
@@ -590,6 +623,35 @@ def validate_registration_identity(mobile, email, nic, password):
 
     return errors
 
+
+
+def validate_registration_profile(
+    full_name,
+    driver_ntc_registration_number,
+    driving_license_number,
+    depot_operator,
+):
+    errors = {}
+
+    if not 2 <= len(full_name) <= 120:
+        errors["fullName"] = "Full name must contain between 2 and 120 characters"
+
+    if not 2 <= len(driver_ntc_registration_number) <= 60:
+        errors["driverNtcRegistrationNumber"] = (
+            "Driver NTC registration number must contain between 2 and 60 characters"
+        )
+
+    if not 2 <= len(driving_license_number) <= 60:
+        errors["drivingLicenseNumber"] = (
+            "Driving license number must contain between 2 and 60 characters"
+        )
+
+    if len(depot_operator) > 120:
+        errors["depotOperator"] = (
+            "Operator or depot name cannot exceed 120 characters"
+        )
+
+    return errors
 
 def serialize_driver(driver):
     created_at = driver.get("createdAt")
@@ -853,11 +915,15 @@ def driver_register_check_availability():
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
+
     conflicts = get_registration_conflicts(
         mobile=data.get("mobile"),
         email=data.get("email"),
         nic=data.get("nic"),
-        vehicle_registration_number=data.get("vehicleRegistrationNumber"),
+        driver_ntc_registration_number=data.get(
+            "driverNtcRegistrationNumber"
+        ),
+        driving_license_number=data.get("drivingLicenseNumber"),
     )
 
     return jsonify({
@@ -871,69 +937,74 @@ def driver_register_request_otp():
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
-    full_name = data.get("fullName")
-    nic = data.get("nic")
-    mobile = data.get("mobile")
-    email = data.get("email")
-    password = data.get("password")
-    conductor_name = data.get("conductorName")
-    driver_ntc_registration_number = data.get("driverNtcRegistrationNumber")
-    bus_ntc_permit_number = data.get("busNtcPermitNumber")
-    driving_license_number = data.get("drivingLicenseNumber")
-    driving_license_expiry = data.get("drivingLicenseExpiry")
-    bus_route_number = data.get("busRouteNumber")
-    vehicle_registration_number = data.get("vehicleRegistrationNumber")
-    depot_operator = data.get("depotOperator")
-    documents = data.get("documents") or {}
-    kyc_status = "NOT_SUBMITTED"
 
-    if not all([
-        full_name,
-        nic,
-        mobile,
-        email,
-        password,
-        conductor_name,
-        driver_ntc_registration_number,
-        bus_ntc_permit_number,
-        driving_license_number,
-        driving_license_expiry,
-        bus_route_number,
-        vehicle_registration_number,
-        depot_operator,
-    ]):
-        return jsonify({"error": "All fields are required"}), 400
+    unsupported_fields = sorted(
+        field
+        for field in LEGACY_OPERATIONAL_REGISTRATION_FIELDS
+        if field in data
+    )
+    if unsupported_fields:
+        return jsonify({
+            "error": (
+                "Route, bus, permit, and conductor details are assigned "
+                "operationally and cannot be submitted during driver registration"
+            ),
+            "code": "UNSUPPORTED_REGISTRATION_FIELDS",
+            "fields": unsupported_fields,
+        }), 400
 
-    text_fields = [
-        full_name,
-        nic,
-        mobile,
-        email,
-        password,
-        conductor_name,
-        driver_ntc_registration_number,
-        bus_ntc_permit_number,
-        driving_license_number,
-        driving_license_expiry,
-        bus_route_number,
-        vehicle_registration_number,
-        depot_operator,
+    required_field_names = (
+        "fullName",
+        "nic",
+        "mobile",
+        "email",
+        "password",
+        "driverNtcRegistrationNumber",
+        "drivingLicenseNumber",
+        "drivingLicenseExpiry",
+    )
+
+    missing_fields = [
+        field
+        for field in required_field_names
+        if field not in data
+        or not isinstance(data.get(field), str)
+        or not data.get(field).strip()
     ]
-    if any(not isinstance(value, str) for value in text_fields):
-        return jsonify({"error": "Registration fields must be text"}), 400
+    if missing_fields:
+        return jsonify({
+            "error": "Required registration fields are missing or invalid",
+            "fieldErrors": {
+                field: "This field is required"
+                for field in missing_fields
+            },
+        }), 400
 
-    full_name = full_name.strip()
-    mobile = normalize_mobile(mobile)
-    email = email.strip().lower()
-    nic = nic.strip().upper()
-    conductor_name = conductor_name.strip()
-    driver_ntc_registration_number = driver_ntc_registration_number.strip()
-    bus_ntc_permit_number = bus_ntc_permit_number.strip()
-    driving_license_number = driving_license_number.strip()
-    driving_license_expiry = driving_license_expiry.strip()
-    bus_route_number = bus_route_number.strip()
-    vehicle_registration_number = vehicle_registration_number.strip().upper()
-    depot_operator = depot_operator.strip()
+    depot_operator_value = data.get("depotOperator", "")
+    if depot_operator_value is None:
+        depot_operator_value = ""
+    if not isinstance(depot_operator_value, str):
+        return jsonify({
+            "error": "Operator or depot name must be text",
+            "fieldErrors": {
+                "depotOperator": "Operator or depot name must be text",
+            },
+        }), 400
+
+    full_name = data["fullName"].strip()
+    mobile = normalize_mobile(data["mobile"])
+    email = data["email"].strip().lower()
+    nic = data["nic"].strip().upper()
+    password = data["password"]
+    driver_ntc_registration_number = (
+        data["driverNtcRegistrationNumber"].strip().upper()
+    )
+    driving_license_number = (
+        data["drivingLicenseNumber"].strip().upper()
+    )
+    driving_license_expiry = data["drivingLicenseExpiry"].strip()
+    depot_operator = depot_operator_value.strip()
+    documents = data.get("documents") or {}
 
     documents, document_error = sanitize_registration_documents(
         documents,
@@ -942,12 +1013,20 @@ def driver_register_request_otp():
     if document_error:
         return jsonify({"error": document_error}), 400
 
-    validation_errors = validate_registration_identity(
-        mobile,
-        email,
-        nic,
-        password,
-    )
+    validation_errors = {
+        **validate_registration_identity(
+            mobile,
+            email,
+            nic,
+            password,
+        ),
+        **validate_registration_profile(
+            full_name,
+            driver_ntc_registration_number,
+            driving_license_number,
+            depot_operator,
+        ),
+    }
     if validation_errors:
         return jsonify({
             "error": next(iter(validation_errors.values())),
@@ -957,57 +1036,61 @@ def driver_register_request_otp():
     if not is_today_or_future_date(driving_license_expiry):
         return jsonify({
             "error": "Driving license expiry cannot be a past date",
+            "fieldErrors": {
+                "drivingLicenseExpiry": (
+                    "Driving license expiry cannot be a past date"
+                ),
+            },
         }), 400
 
     conflicts = get_registration_conflicts(
         mobile=mobile,
         email=email,
         nic=nic,
-        vehicle_registration_number=vehicle_registration_number,
+        driver_ntc_registration_number=driver_ntc_registration_number,
+        driving_license_number=driving_license_number,
     )
     if conflicts:
         return jsonify({
             "error": next(iter(conflicts.values())),
             "conflicts": conflicts,
-        }), 400
+        }), 409
 
     cooldown_response = otp_request_cooldown(mobile, "register")
     if cooldown_response:
         return cooldown_response
 
-    # Hash the password before storing the short-lived registration record.
     hashed_password = bcrypt.hashpw(
         password.encode("utf-8"),
         bcrypt.gensalt(),
     ).decode("utf-8")
+
+    registration_data = {
+        "fullName": full_name,
+        "nic": nic,
+        "email": email,
+        "password": hashed_password,
+        "driverNtcRegistrationNumber": driver_ntc_registration_number,
+        "drivingLicenseNumber": driving_license_number,
+        "drivingLicenseExpiry": driving_license_expiry,
+        "documents": documents,
+    }
+    if depot_operator:
+        registration_data["depotOperator"] = depot_operator
 
     otp = generate_otp()
     reservation, reservation_error = reserve_otp_record(
         mobile,
         "register",
         otp,
-        {
-            "fullName": full_name,
-            "nic": nic,
-            "email": email,
-            "password": hashed_password,
-            "conductorName": conductor_name,
-            "driverNtcRegistrationNumber": driver_ntc_registration_number,
-            "busNtcPermitNumber": bus_ntc_permit_number,
-            "drivingLicenseNumber": driving_license_number,
-            "drivingLicenseExpiry": driving_license_expiry,
-            "busRouteNumber": bus_route_number,
-            "vehicleRegistrationNumber": vehicle_registration_number,
-            "depotOperator": depot_operator,
-            "documents": documents,
-            "kycStatus": kyc_status,
-        },
+        registration_data,
     )
     if reservation_error:
         return reservation_error
 
     sms_result = send_sms(
-        mobile, f"Your Gamana.lk verification code is {otp}. Valid for 5 minutes."
+        mobile,
+        f"Your Gamana.lk verification code is {otp}. Valid for 5 minutes.",
     )
     if not sms_result.get("ok"):
         otp_collection.delete_one({
@@ -1041,14 +1124,20 @@ def driver_register_verify_otp():
         return otp_error
 
     reg_data = record.get("registration_data", {})
+    if not isinstance(reg_data, dict):
+        return jsonify({
+            "error": "Registration data is unavailable; start again",
+            "code": "REGISTRATION_DATA_INVALID",
+        }), 409
 
     conflicts = get_registration_conflicts(
         mobile=mobile,
         email=reg_data.get("email"),
         nic=reg_data.get("nic"),
-        vehicle_registration_number=reg_data.get(
-            "vehicleRegistrationNumber"
+        driver_ntc_registration_number=reg_data.get(
+            "driverNtcRegistrationNumber"
         ),
+        driving_license_number=reg_data.get("drivingLicenseNumber"),
     )
 
     if conflicts:
@@ -1057,11 +1146,9 @@ def driver_register_verify_otp():
             "conflicts": conflicts,
         }), 409
 
+    now = datetime.now(timezone.utc)
     driver = {
-        "fullName": reg_data.get(
-            "fullName",
-            record.get("name", ""),
-        ),
+        "fullName": reg_data.get("fullName", record.get("name", "")),
         "nic": reg_data.get("nic", ""),
         "nicKey": str(reg_data.get("nic", "")).strip().upper(),
         "mobile": mobile,
@@ -1069,39 +1156,22 @@ def driver_register_verify_otp():
         "email": reg_data.get("email", ""),
         "emailKey": str(reg_data.get("email", "")).strip().casefold(),
         "password": reg_data.get("password", ""),
-        "conductorName": reg_data.get(
-            "conductorName",
-            "",
-        ),
         "driverNtcRegistrationNumber": reg_data.get(
             "driverNtcRegistrationNumber",
             "",
         ),
-        "busNtcPermitNumber": reg_data.get(
-            "busNtcPermitNumber",
-            "",
-        ),
+        "driverNtcRegistrationNumberKey": str(
+            reg_data.get("driverNtcRegistrationNumber", "")
+        ).strip().upper(),
         "drivingLicenseNumber": reg_data.get(
             "drivingLicenseNumber",
             "",
         ),
+        "drivingLicenseNumberKey": str(
+            reg_data.get("drivingLicenseNumber", "")
+        ).strip().upper(),
         "drivingLicenseExpiry": reg_data.get(
             "drivingLicenseExpiry",
-            "",
-        ),
-        "busRouteNumber": reg_data.get(
-            "busRouteNumber",
-            "",
-        ),
-        "vehicleRegistrationNumber": reg_data.get(
-            "vehicleRegistrationNumber",
-            "",
-        ),
-        "vehicleAssignmentKey": str(
-            reg_data.get("vehicleRegistrationNumber", "")
-        ).strip().upper(),
-        "depotOperator": reg_data.get(
-            "depotOperator",
             "",
         ),
         "documents": reg_data.get("documents", {}),
@@ -1112,8 +1182,13 @@ def driver_register_verify_otp():
             if registration_documents_complete(reg_data.get("documents", {}))
             else "NOT_SUBMITTED"
         ),
-        "createdAt": datetime.now(),
+        "createdAt": now,
+        "updatedAt": now,
     }
+
+    depot_operator = str(reg_data.get("depotOperator") or "").strip()
+    if depot_operator:
+        driver["depotOperator"] = depot_operator
 
     try:
         result = drivers_collection.insert_one(driver)
@@ -1132,20 +1207,25 @@ def driver_register_verify_otp():
                 "nic",
                 "This NIC is already registered",
             ),
-            "unique_new_vehicle_assignment": (
-                "vehicleRegistrationNumber",
-                "This vehicle registration number is already assigned",
+            "unique_new_driver_ntc_identity": (
+                "driverNtcRegistrationNumber",
+                "This driver NTC registration number is already registered",
+            ),
+            "unique_new_driving_license_identity": (
+                "drivingLicenseNumber",
+                "This driving license number is already registered",
             ),
         }
-        field, message = duplicate_map.get(
-            next(
-                (
-                    index_name
-                    for index_name in duplicate_map
-                    if index_name in duplicate_details
-                ),
-                "",
+        index_name = next(
+            (
+                name
+                for name in duplicate_map
+                if name in duplicate_details
             ),
+            "",
+        )
+        field, message = duplicate_map.get(
+            index_name,
             (
                 "registration",
                 "Registration details conflict with an existing driver",
@@ -1155,8 +1235,8 @@ def driver_register_verify_otp():
             "error": message,
             "conflicts": {field: message},
         }), 409
-    driver_id = str(result.inserted_id)
 
+    driver_id = str(result.inserted_id)
     access_token = create_access_token(
         subject=driver_id,
         role="driver",

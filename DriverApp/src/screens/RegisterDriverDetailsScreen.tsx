@@ -1,12 +1,8 @@
 import React, { useState } from 'react';
-import {
-  Modal,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
 import FormInput from '../components/FormInput';
+
 import type {
   DriverRegistrationForm,
   DriverRegistrationTextField,
@@ -31,17 +27,13 @@ function RegisterDriverDetailsScreen({
     getMonthStart(selectedExpiryDate),
   );
 
-  const updateExpiryDate = (date: Date) => {
-    onChangeText('drivingLicenseExpiry')(formatDateValue(date));
-  };
-
   const openExpiryPicker = () => {
     setVisibleMonth(getMonthStart(selectedExpiryDate));
     setShowExpiryPicker(true);
   };
 
   const selectExpiryDate = (date: Date) => {
-    updateExpiryDate(date);
+    onChangeText('drivingLicenseExpiry')(formatDateValue(date));
     setShowExpiryPicker(false);
   };
 
@@ -49,19 +41,11 @@ function RegisterDriverDetailsScreen({
     <>
       <FormInput
         label="Driver NTC Registration Number"
-        placeholder="Enter driver's NTC registration number"
+        placeholder="Enter driver NTC registration number"
         value={form.driverNtcRegistrationNumber}
         onChangeText={onChangeText('driverNtcRegistrationNumber')}
         error={errors.driverNtcRegistrationNumber}
         autoCapitalize="characters"
-      />
-
-      <FormInput
-        label="Vehicle NTC Number / Passenger Service Permit Number"
-        placeholder="Enter the bus NTC or passenger service permit number"
-        value={form.busNtcPermitNumber}
-        onChangeText={onChangeText('busNtcPermitNumber')}
-        error={errors.busNtcPermitNumber}
       />
 
       <FormInput
@@ -75,6 +59,7 @@ function RegisterDriverDetailsScreen({
 
       <View style={styles.wrapper}>
         <Text style={styles.label}>Driving License Expiry</Text>
+
         <TouchableOpacity
           style={[
             styles.dateField,
@@ -89,9 +74,10 @@ function RegisterDriverDetailsScreen({
               !form.drivingLicenseExpiry ? styles.placeholderText : null,
             ]}
           >
-            {form.drivingLicenseExpiry || 'Select driving license expiry date'}
+            {form.drivingLicenseExpiry || 'Select license expiry date'}
           </Text>
         </TouchableOpacity>
+
         {errors.drivingLicenseExpiry ? (
           <Text style={styles.error}>{errors.drivingLicenseExpiry}</Text>
         ) : null}
@@ -109,25 +95,8 @@ function RegisterDriverDetailsScreen({
       />
 
       <FormInput
-        label="Bus Route Number"
-        placeholder="e.g. 138, 100-2"
-        value={form.busRouteNumber}
-        onChangeText={onChangeText('busRouteNumber')}
-        error={errors.busRouteNumber}
-      />
-
-      <FormInput
-        label="Vehicle Registration Number"
-        placeholder="e.g. NC-8552"
-        value={form.vehicleRegistrationNumber}
-        onChangeText={onChangeText('vehicleRegistrationNumber')}
-        error={errors.vehicleRegistrationNumber}
-        autoCapitalize="characters"
-      />
-
-      <FormInput
-        label="Depot / Operator Name"
-        placeholder="e.g. Colombo Depot"
+        label="Operator / Depot (Optional)"
+        placeholder="Enter affiliated operator or depot"
         value={form.depotOperator}
         onChangeText={onChangeText('depotOperator')}
         error={errors.depotOperator}
@@ -162,18 +131,34 @@ function DatePickerModal({
   const days = getCalendarDays(visibleMonth);
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
       <View style={styles.modalOverlay}>
         <View style={styles.calendarCard}>
           <View style={styles.calendarHeader}>
             <TouchableOpacity
               style={styles.monthButton}
               onPress={onPreviousMonth}
+              accessibilityRole="button"
+              accessibilityLabel="Previous month"
             >
               <Text style={styles.monthButtonText}>‹</Text>
             </TouchableOpacity>
-            <Text style={styles.monthTitle}>{formatMonthTitle(visibleMonth)}</Text>
-            <TouchableOpacity style={styles.monthButton} onPress={onNextMonth}>
+
+            <Text style={styles.monthTitle}>
+              {formatMonthTitle(visibleMonth)}
+            </Text>
+
+            <TouchableOpacity
+              style={styles.monthButton}
+              onPress={onNextMonth}
+              accessibilityRole="button"
+              accessibilityLabel="Next month"
+            >
               <Text style={styles.monthButtonText}>›</Text>
             </TouchableOpacity>
           </View>
@@ -239,7 +224,10 @@ const getTodayDate = () => {
 
 const parseDateValue = (value: string) => {
   const [year, month, day] = value.split('-').map(Number);
-  if (!year || !month || !day) return getTodayDate();
+
+  if (!year || !month || !day) {
+    return getTodayDate();
+  }
 
   return new Date(year, month - 1, day);
 };
@@ -265,7 +253,10 @@ const getCalendarDays = (visibleMonth: Date) => {
 };
 
 const formatMonthTitle = (date: Date) =>
-  date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  date.toLocaleDateString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
 
 const formatDateValue = (date: Date) => {
   const year = date.getFullYear();
@@ -286,18 +277,23 @@ const getDateOnlyTime = (date: Date) =>
 
 const styles = StyleSheet.create({
   wrapper: { marginBottom: 16 },
-  label: { fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 6 },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333333',
+    marginBottom: 6,
+  },
   dateField: {
     borderWidth: 1,
-    borderColor: '#ccc',
+    borderColor: '#CCCCCC',
     borderRadius: 8,
     padding: 14,
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
   },
-  dateFieldError: { borderColor: '#e74c3c' },
-  dateText: { fontSize: 16, color: '#333' },
-  placeholderText: { color: '#999' },
-  error: { color: '#e74c3c', fontSize: 12, marginTop: 4 },
+  dateFieldError: { borderColor: '#E74C3C' },
+  dateText: { fontSize: 16, color: '#333333' },
+  placeholderText: { color: '#999999' },
+  error: { color: '#E74C3C', fontSize: 12, marginTop: 4 },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.35)',
@@ -305,7 +301,7 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   calendarCard: {
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
     borderRadius: 16,
     padding: 16,
   },
@@ -319,35 +315,21 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#f4f8ff',
+    backgroundColor: '#F4F8FF',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  monthButtonText: {
-    fontSize: 28,
-    color: '#0066cc',
-    lineHeight: 32,
-  },
-  monthTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#1f2937',
-  },
-  weekRow: {
-    flexDirection: 'row',
-    marginBottom: 8,
-  },
+  monthButtonText: { fontSize: 28, color: '#0066CC', lineHeight: 32 },
+  monthTitle: { fontSize: 18, fontWeight: '800', color: '#1F2937' },
+  weekRow: { flexDirection: 'row', marginBottom: 8 },
   weekDay: {
     flex: 1,
     textAlign: 'center',
     fontSize: 12,
     fontWeight: '700',
-    color: '#777',
+    color: '#777777',
   },
-  daysGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
+  daysGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   dayCell: {
     width: `${100 / 7}%`,
     height: 42,
@@ -355,38 +337,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginBottom: 4,
   },
-  dayButton: {
-    borderRadius: 21,
-  },
-  selectedDayButton: {
-    backgroundColor: '#0066cc',
-  },
-  disabledDayButton: {
-    opacity: 0.35,
-  },
-  dayText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#333',
-  },
-  selectedDayText: {
-    color: '#fff',
-  },
-  disabledDayText: {
-    color: '#999',
-  },
+  dayButton: { borderRadius: 21 },
+  selectedDayButton: { backgroundColor: '#0066CC' },
+  disabledDayButton: { opacity: 0.35 },
+  dayText: { fontSize: 15, fontWeight: '700', color: '#333333' },
+  selectedDayText: { color: '#FFFFFF' },
+  disabledDayText: { color: '#999999' },
   closeButton: {
     borderWidth: 1,
-    borderColor: '#0066cc',
+    borderColor: '#0066CC',
     borderRadius: 8,
     padding: 12,
     alignItems: 'center',
     marginTop: 12,
   },
-  closeButtonText: {
-    color: '#0066cc',
-    fontWeight: '700',
-  },
+  closeButtonText: { color: '#0066CC', fontWeight: '700' },
 });
 
 export default RegisterDriverDetailsScreen;

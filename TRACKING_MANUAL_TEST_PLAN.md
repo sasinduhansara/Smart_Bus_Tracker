@@ -1,4 +1,4 @@
-# Live Tracking Manual Test Plan
+# Driver Registration and Live Tracking Manual Test Plan
 
 ## Scope and operating assumption
 
@@ -14,7 +14,53 @@ True screen-locked/background delivery is not enabled yet and must not be
 described as always-live until the native lifecycle below is implemented and
 validated on physical Android and iOS devices.
 
-## Physical-device scenarios
+## Driver registration and OTP scenarios
+
+Use new test identities that do not belong to real drivers. Record the API
+response code and a screenshot for every rejected or interrupted state.
+
+1. Open registration and confirm the flow contains Personal Information, Driver
+   Qualifications, optional KYC Documents, and Review & Submit. Route, vehicle,
+   bus permit, and conductor fields must not appear because operations assigns
+   them after registration.
+2. Enter invalid NIC, mobile, email, and password values. Confirm inline errors
+   appear and the form cannot continue. Confirm the password visibility button
+   has an accessible Show/Hide label.
+3. Enter a valid NIC, mobile, and email slowly. Confirm each field performs one
+   debounced availability check, shows Checking, then Available, without sending
+   a request for every keystroke.
+4. Use an existing NIC, mobile, or email. Confirm the conflicting field is
+   identified, Next remains unavailable, and changing the value performs a new
+   check. Disable the network and confirm the UI explains that availability will
+   be checked again when continuing.
+5. Enter the Driver NTC registration number and driving licence number. Confirm
+   they are normalized to uppercase in the submitted payload. Confirm a past
+   licence-expiry date cannot be selected or submitted and today/future dates can.
+6. Leave Operator / Depot empty and continue successfully. Repeat with a value and
+   confirm it is included without becoming an operational bus assignment.
+7. On KYC Documents, test Camera and Gallery for all four document types. Confirm
+   files over 5 MB are rejected, only one upload runs at a time, completed uploads
+   show their status, removal works, and leaving the screen cancels an in-flight
+   upload safely.
+8. Skip all documents and confirm registration can continue with KYC status Not
+   Submitted. Repeat with all four verified upload references and confirm the
+   review screen reports them as Uploaded without exposing storage credentials.
+9. On Review & Submit, verify normalized personal and licence details, optional
+   document status, checkbox accessibility, and that submission remains disabled
+   until confirmation is checked.
+10. Submit twice quickly. Confirm one registration OTP reservation is active,
+    passwords are stored only as hashes, and the OTP/SMS provider response is not
+    exposed to the app.
+11. Enter non-digits and more than six digits on OTP verification. Confirm the UI
+    retains only six digits, supports OS one-time-code autofill, and enables Verify
+    only at six digits. Test invalid, expired, reused, and correct OTP values.
+12. After successful registration verification, confirm one clean pending driver
+    record is created with canonical mobile/email/NIC/NTC/licence identity keys,
+    no route/vehicle/permit/conductor assignment fields, and navigation goes to
+    Pending Approval. Confirm a duplicate NTC or licence is rejected safely, then
+    assign route and vehicle later through the authorised operations workflow.
+
+## Live tracking physical-device scenarios
 
 Use an approved test driver with a real bus and route assignment. Use a second
 physical device for the Passenger App and record timestamps/screenshots for each

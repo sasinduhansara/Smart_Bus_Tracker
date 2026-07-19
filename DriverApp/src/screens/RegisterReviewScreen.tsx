@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
 import type {
   DriverRegistrationForm,
   RegistrationDocumentKey,
@@ -31,25 +32,27 @@ const DOCUMENT_ROWS: DocumentReviewRow[] = [
 ];
 
 const getReviewRows = (form: DriverRegistrationForm): ReviewRow[] => [
-  { label: 'Full Name', value: form.fullName },
-  { label: 'NIC', value: form.nic },
-  { label: 'Mobile', value: form.mobile },
-  { label: 'Email', value: form.email },
+  { label: 'Full Name', value: form.fullName.trim() },
+  { label: 'NIC', value: form.nic.trim().toUpperCase() },
+  { label: 'Mobile', value: form.mobile.trim() },
+  { label: 'Email', value: form.email.trim().toLowerCase() },
   { label: 'Password', value: form.password ? 'Set' : 'Not set' },
-  { label: 'Conductor Name', value: form.conductorName },
   {
     label: 'Driver NTC Registration Number',
-    value: form.driverNtcRegistrationNumber,
+    value: form.driverNtcRegistrationNumber.trim().toUpperCase(),
   },
   {
-    label: 'Vehicle NTC Number / Passenger Service Permit Number',
-    value: form.busNtcPermitNumber,
+    label: 'Driving License Number',
+    value: form.drivingLicenseNumber.trim().toUpperCase(),
   },
-  { label: 'Driving License Number', value: form.drivingLicenseNumber },
-  { label: 'Driving License Expiry', value: form.drivingLicenseExpiry },
-  { label: 'Bus Route Number', value: form.busRouteNumber },
-  { label: 'Vehicle Registration Number', value: form.vehicleRegistrationNumber },
-  { label: 'Depot / Operator Name', value: form.depotOperator },
+  {
+    label: 'Driving License Expiry',
+    value: form.drivingLicenseExpiry,
+  },
+  {
+    label: 'Operator / Depot',
+    value: form.depotOperator.trim(),
+  },
 ];
 
 function RegisterReviewScreen({
@@ -62,6 +65,7 @@ function RegisterReviewScreen({
   return (
     <View>
       <Text style={styles.sectionTitle}>Entered Information</Text>
+
       <View style={styles.card}>
         {getReviewRows(form).map(row => (
           <View key={row.label} style={styles.row}>
@@ -72,6 +76,7 @@ function RegisterReviewScreen({
       </View>
 
       <Text style={styles.sectionTitle}>Document Upload Status</Text>
+
       <View style={styles.card}>
         {DOCUMENT_ROWS.map(row => {
           const uploaded = Boolean(form[row.key]);
@@ -79,6 +84,7 @@ function RegisterReviewScreen({
           return (
             <View key={row.key} style={styles.row}>
               <Text style={styles.rowLabel}>{row.label}</Text>
+
               <Text
                 style={[
                   styles.rowValue,
@@ -97,10 +103,13 @@ function RegisterReviewScreen({
         onPress={onToggleConfirmed}
         activeOpacity={0.8}
         disabled={loading}
+        accessibilityRole="checkbox"
+        accessibilityState={{ checked: confirmed, disabled: loading }}
       >
         <View style={[styles.checkbox, confirmed && styles.checkboxActive]}>
           {confirmed ? <Text style={styles.checkMark}>✓</Text> : null}
         </View>
+
         <Text style={styles.confirmText}>
           I confirm that the information provided is correct.
         </Text>
@@ -113,6 +122,7 @@ function RegisterReviewScreen({
         ]}
         onPress={onSubmit}
         disabled={!confirmed || loading}
+        activeOpacity={0.85}
       >
         <Text style={styles.submitButtonText}>
           {loading ? 'Submitting...' : 'Submit Registration'}
@@ -126,38 +136,39 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#555',
+    color: '#555555',
     marginBottom: 8,
     marginTop: 8,
   },
   card: {
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: '#DDDDDD',
     borderRadius: 10,
-    backgroundColor: '#fff',
+    backgroundColor: '#FFFFFF',
     marginBottom: 16,
+    overflow: 'hidden',
   },
   row: {
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#eee',
+    borderBottomColor: '#EEEEEE',
   },
   rowLabel: {
     fontSize: 12,
-    color: '#777',
+    color: '#777777',
     marginBottom: 3,
   },
   rowValue: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#333',
+    color: '#333333',
   },
   uploadedText: {
-    color: '#16a34a',
+    color: '#15803D',
   },
   notUploadedText: {
-    color: '#888',
+    color: '#777777',
   },
   confirmRow: {
     flexDirection: 'row',
@@ -170,25 +181,25 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#0066cc',
+    borderColor: '#0066CC',
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkboxActive: {
-    backgroundColor: '#0066cc',
+    backgroundColor: '#0066CC',
   },
   checkMark: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontWeight: '800',
   },
   confirmText: {
     flex: 1,
     fontSize: 13,
-    color: '#444',
+    color: '#444444',
     lineHeight: 18,
   },
   submitButton: {
-    backgroundColor: '#0066cc',
+    backgroundColor: '#0066CC',
     padding: 16,
     borderRadius: 8,
     alignItems: 'center',
@@ -198,9 +209,9 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   submitButtonText: {
-    color: '#fff',
+    color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: 'bold',
+    fontWeight: '700',
   },
 });
 

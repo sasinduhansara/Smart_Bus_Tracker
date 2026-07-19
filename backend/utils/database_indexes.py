@@ -12,21 +12,36 @@ from config import (
 
 
 def ensure_safe_indexes() -> dict[str, list[str]]:
-    """Create idempotent indexes that do not assume cleaned legacy data.
+    """Create idempotent indexes without assuming cleaned legacy data.
 
-    ``activeKey``, ``busActiveKey``, ``trackingKey``, and
-    ``vehicleAssignmentKey`` are new canonical keys, so their sparse unique
-    indexes remain compatible with untouched legacy documents. Existing
-    identity fields receive non-unique lookup indexes; promoting those legacy
-    fields to unique indexes must happen only after a duplicate-data audit and
-    normalization migration.
+    Canonical identity keys are populated only for newly normalized records,
+    so sparse unique indexes remain compatible with untouched legacy rows.
+    Legacy fields retain non-unique lookup indexes until a duplicate audit and
+    normalization migration can safely promote or remove them.
     """
 
     return {
         "drivers": drivers_collection.create_indexes([
-            IndexModel([("mobile", ASCENDING)], name="driver_mobile_lookup"),
-            IndexModel([("email", ASCENDING)], name="driver_email_lookup"),
-            IndexModel([("nic", ASCENDING)], name="driver_nic_lookup"),
+            IndexModel(
+                [("mobile", ASCENDING)],
+                name="driver_mobile_lookup",
+            ),
+            IndexModel(
+                [("email", ASCENDING)],
+                name="driver_email_lookup",
+            ),
+            IndexModel(
+                [("nic", ASCENDING)],
+                name="driver_nic_lookup",
+            ),
+            IndexModel(
+                [("driverNtcRegistrationNumber", ASCENDING)],
+                name="driver_ntc_lookup",
+            ),
+            IndexModel(
+                [("drivingLicenseNumber", ASCENDING)],
+                name="driver_license_lookup",
+            ),
             IndexModel(
                 [("vehicleRegistrationNumber", ASCENDING)],
                 name="driver_vehicle_lookup",
@@ -50,14 +65,33 @@ def ensure_safe_indexes() -> dict[str, list[str]]:
                 sparse=True,
             ),
             IndexModel(
+                [("driverNtcRegistrationNumberKey", ASCENDING)],
+                name="unique_new_driver_ntc_identity",
+                unique=True,
+                sparse=True,
+            ),
+            IndexModel(
+                [("drivingLicenseNumberKey", ASCENDING)],
+                name="unique_new_driving_license_identity",
+                unique=True,
+                sparse=True,
+            ),
+            IndexModel(
                 [("vehicleAssignmentKey", ASCENDING)],
                 name="unique_new_vehicle_assignment",
                 unique=True,
                 sparse=True,
             ),
             IndexModel(
-                [("verificationStatus", ASCENDING), ("createdAt", DESCENDING)],
+                [
+                    ("verificationStatus", ASCENDING),
+                    ("createdAt", DESCENDING),
+                ],
                 name="driver_approval_queue",
+            ),
+            IndexModel(
+                [("drivingLicenseExpiry", ASCENDING)],
+                name="driver_license_expiry_lookup",
             ),
         ]),
         "trips": trips_collection.create_indexes([
@@ -74,16 +108,25 @@ def ensure_safe_indexes() -> dict[str, list[str]]:
                 sparse=True,
             ),
             IndexModel(
-                [("driverId", ASCENDING), ("startedAt", DESCENDING)],
+                [
+                    ("driverId", ASCENDING),
+                    ("startedAt", DESCENDING),
+                ],
                 name="driver_trip_history",
             ),
             IndexModel(
-                [("busId", ASCENDING), ("status", ASCENDING)],
+                [
+                    ("busId", ASCENDING),
+                    ("status", ASCENDING),
+                ],
                 name="bus_trip_status",
             ),
         ]),
         "buses": buses_collection.create_indexes([
-            IndexModel([("bus_id", ASCENDING)], name="bus_id_lookup"),
+            IndexModel(
+                [("bus_id", ASCENDING)],
+                name="bus_id_lookup",
+            ),
             IndexModel(
                 [("trackingKey", ASCENDING)],
                 name="unique_canonical_bus_tracking",
@@ -91,7 +134,10 @@ def ensure_safe_indexes() -> dict[str, list[str]]:
                 sparse=True,
             ),
             IndexModel(
-                [("operationalStatus", ASCENDING), ("updatedAt", DESCENDING)],
+                [
+                    ("operationalStatus", ASCENDING),
+                    ("updatedAt", DESCENDING),
+                ],
                 name="bus_operational_recency",
             ),
         ]),
@@ -103,7 +149,10 @@ def ensure_safe_indexes() -> dict[str, list[str]]:
                 sparse=True,
             ),
             IndexModel(
-                [("mobile", ASCENDING), ("purpose", ASCENDING)],
+                [
+                    ("mobile", ASCENDING),
+                    ("purpose", ASCENDING),
+                ],
                 name="legacy_otp_mobile_purpose_lookup",
             ),
             IndexModel(
@@ -113,21 +162,34 @@ def ensure_safe_indexes() -> dict[str, list[str]]:
             ),
         ]),
         "routes": routes_collection.create_indexes([
-            IndexModel([("routeNumber", ASCENDING)], name="route_number_lookup"),
+            IndexModel(
+                [("routeNumber", ASCENDING)],
+                name="route_number_lookup",
+            ),
         ]),
         "issues": issue_reports_collection.create_indexes([
             IndexModel(
-                [("driverId", ASCENDING), ("createdAt", DESCENDING)],
+                [
+                    ("driverId", ASCENDING),
+                    ("createdAt", DESCENDING),
+                ],
                 name="driver_issue_history",
             ),
             IndexModel(
-                [("status", ASCENDING), ("severity", ASCENDING), ("createdAt", DESCENDING)],
+                [
+                    ("status", ASCENDING),
+                    ("severity", ASCENDING),
+                    ("createdAt", DESCENDING),
+                ],
                 name="issue_review_queue",
             ),
         ]),
         "notifications": notifications_collection.create_indexes([
             IndexModel(
-                [("driverId", ASCENDING), ("read", ASCENDING)],
+                [
+                    ("driverId", ASCENDING),
+                    ("read", ASCENDING),
+                ],
                 name="driver_unread_notifications",
             ),
         ]),

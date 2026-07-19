@@ -122,7 +122,9 @@ function RegisterDocumentsScreen({
     } catch (error) {
       if (
         mountedRef.current &&
-        (!error || typeof error !== 'object' || !('code' in error) ||
+        (!error ||
+          typeof error !== 'object' ||
+          !('code' in error) ||
           error.code !== 'CANCELLED')
       ) {
         const message =
@@ -149,7 +151,10 @@ function RegisterDocumentsScreen({
 
     if (response.didCancel) return;
     if (response.errorCode) {
-      Alert.alert('Document Error', response.errorMessage || 'Could not open camera');
+      Alert.alert(
+        'Document Error',
+        response.errorMessage || 'Could not open camera',
+      );
       return;
     }
 
@@ -157,11 +162,16 @@ function RegisterDocumentsScreen({
       typeof response.assets?.[0]?.fileSize === 'number' &&
       response.assets[0].fileSize > MAX_FILE_SIZE
     ) {
-      Alert.alert('Document Error', 'The selected image exceeds the 5 MB limit.');
+      Alert.alert(
+        'Document Error',
+        'The selected image exceeds the 5 MB limit.',
+      );
       return;
     }
 
-    const file = response.assets?.[0] ? toDocumentFile(response.assets[0]) : null;
+    const file = response.assets?.[0]
+      ? toDocumentFile(response.assets[0])
+      : null;
     if (file) await uploadSelectedDocument(field, file);
   };
 
@@ -187,23 +197,35 @@ function RegisterDocumentsScreen({
       typeof response.assets?.[0]?.fileSize === 'number' &&
       response.assets[0].fileSize > MAX_FILE_SIZE
     ) {
-      Alert.alert('Document Error', 'The selected image exceeds the 5 MB limit.');
+      Alert.alert(
+        'Document Error',
+        'The selected image exceeds the 5 MB limit.',
+      );
       return;
     }
 
-    const file = response.assets?.[0] ? toDocumentFile(response.assets[0]) : null;
+    const file = response.assets?.[0]
+      ? toDocumentFile(response.assets[0])
+      : null;
     if (file) await uploadSelectedDocument(field, file);
   };
 
   const showPicker = (field: RegistrationDocumentKey) => {
-    Alert.alert('Select Document', 'Choose how you want to add this document.', [
-      { text: 'Camera', onPress: () => pickFromCamera(field).catch(() => undefined) },
-      {
-        text: 'Gallery',
-        onPress: () => pickFromGallery(field).catch(() => undefined),
-      },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
+    Alert.alert(
+      'Select Document',
+      'Choose how you want to add this document.',
+      [
+        {
+          text: 'Camera',
+          onPress: () => pickFromCamera(field).catch(() => undefined),
+        },
+        {
+          text: 'Gallery',
+          onPress: () => pickFromGallery(field).catch(() => undefined),
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
   };
 
   return (
@@ -225,13 +247,16 @@ function RegisterDocumentsScreen({
                 {isUploading
                   ? 'Uploading...'
                   : selectedDocument?.uploaded
-                    ? 'Uploaded to Supabase'
-                    : 'Not uploaded'}
+                  ? 'Document uploaded successfully'
+                  : 'Not uploaded'}
               </Text>
             </View>
 
             {selectedDocument?.uri ? (
-              <Image source={{ uri: selectedDocument.uri }} style={styles.preview} />
+              <Image
+                source={{ uri: selectedDocument.uri }}
+                style={styles.preview}
+              />
             ) : null}
 
             <View style={styles.documentActions}>
@@ -240,7 +265,9 @@ function RegisterDocumentsScreen({
                 accessibilityLabel={
                   isUploading
                     ? `Cancel ${option.label} upload`
-                    : `${selectedDocument ? 'Replace' : 'Select'} ${option.label}`
+                    : `${selectedDocument ? 'Replace' : 'Select'} ${
+                        option.label
+                      }`
                 }
                 accessibilityState={{
                   busy: isUploading,
@@ -260,7 +287,9 @@ function RegisterDocumentsScreen({
                 {isUploading ? (
                   <View style={styles.cancelUploadContent}>
                     <ActivityIndicator color="#0066cc" />
-                    <Text style={styles.secondaryButtonText}>Cancel upload</Text>
+                    <Text style={styles.secondaryButtonText}>
+                      Cancel upload
+                    </Text>
                   </View>
                 ) : (
                   <Text style={styles.secondaryButtonText}>
