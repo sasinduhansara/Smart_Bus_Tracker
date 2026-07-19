@@ -19,7 +19,7 @@ from routes.trip_routes import trip_bp
 def get_allowed_origins():
     configured_origins = os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:3000,http://localhost:8081,http://localhost:8082",
+        "http://localhost:3000,http://localhost:5173,http://localhost:8081,http://localhost:8082",
     ).strip()
 
     if configured_origins == "*":

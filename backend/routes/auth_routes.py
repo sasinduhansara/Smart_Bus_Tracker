@@ -661,6 +661,20 @@ def serialize_driver(driver):
         created_at = ""
 
     driver_id = str(driver["_id"])
+    verification_status = str(
+        driver.get("verificationStatus", "pending")
+    ).strip().lower()
+    if verification_status not in {
+        "pending",
+        "approved",
+        "verified",
+        "blocked",
+        "rejected",
+        "unverified",
+        "under_review",
+    }:
+        verification_status = "pending"
+
     return {
         "_id": driver_id,
         "driver_id": driver_id,
@@ -676,7 +690,7 @@ def serialize_driver(driver):
         "busRouteNumber": driver.get("busRouteNumber", ""),
         "vehicleRegistrationNumber": driver.get("vehicleRegistrationNumber", ""),
         "depotOperator": driver.get("depotOperator", ""),
-        "verificationStatus": driver.get("verificationStatus", "pending"),
+        "verificationStatus": verification_status,
         "kycStatus": driver.get("kycStatus", "NOT_SUBMITTED"),
         "documents": driver.get("documents", {}),
         "createdAt": created_at,

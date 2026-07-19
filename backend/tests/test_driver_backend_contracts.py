@@ -214,6 +214,45 @@ class DriverBackendContractTests(unittest.TestCase):
             "Authorization": f"Bearer {self.admin_token}",
         }
 
+    def test_admin_overview_returns_shared_operational_metrics(self):
+        test_config.drivers_collection.count_documents.side_effect = [11, 2, 8]
+        test_config.buses_collection.count_documents.side_effect = [17, 6, 1]
+        test_config.trips_collection.count_documents.return_value = 4
+        test_config.issue_reports_collection.count_documents.return_value = 3
+
+        response = self.client.get(
+            "/api/admin/overview",
+            headers=self.admin_headers,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            "status": "success",
+            "metrics": {
+                "drivers": 11,
+                "pendingDrivers": 2,
+                "approvedDrivers": 8,
+                "buses": 17,
+                "activeBuses": 6,
+                "pausedBuses": 1,
+                "activeTrips": 4,
+                "openIssues": 3,
+            },
+        })
+
+    def test_driver_status_serializers_canonicalize_approval_case(self):
+        driver = approved_driver()
+        driver["verificationStatus"] = " APPROVED "
+
+        self.assertEqual(
+            auth_routes.serialize_driver(driver)["verificationStatus"],
+            "approved",
+        )
+        self.assertEqual(
+            admin_routes.serialize_admin_driver(driver)["verificationStatus"],
+            "approved",
+        )
+
     @patch.object(trip_routes.socketio, "emit")
     @patch.object(trip_routes, "get_route_details", return_value=route_details())
     def test_start_trip_persists_canonical_contract(self, get_route, emit):
