@@ -25,6 +25,7 @@ jest.mock('../src/services/api', () => ({
 import React from 'react';
 import { PermissionsAndroid } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
+import * as Keychain from 'react-native-keychain';
 import ReactTestRenderer from 'react-test-renderer';
 
 import {
@@ -40,14 +41,17 @@ type TrackingHook = ReturnType<typeof useDriverLocationTracking>;
 const mockedPermissions = jest.mocked(PermissionsAndroid);
 const mockedSendLocation = jest.mocked(sendDriverLocation);
 const mockGeolocation = jest.mocked(Geolocation);
+const mockedKeychain = jest.mocked(Keychain);
 
 let currentHook: TrackingHook | null = null;
 let renderer: ReactTestRenderer.ReactTestRenderer | null = null;
 const trackingRejected = jest.fn();
+const readinessLocation = jest.fn();
 
 function HookHarness() {
   currentHook = useDriverLocationTracking({
     onTrackingRejected: trackingRejected,
+    onReadinessLocation: readinessLocation,
   });
   return null;
 }
@@ -76,6 +80,8 @@ describe('foreground location watcher lifecycle', () => {
       success(position()),
     );
     mockGeolocation.watchPosition.mockReturnValue(7);
+    mockedKeychain.getGenericPassword.mockResolvedValue(false);
+    mockedKeychain.setGenericPassword.mockResolvedValue({} as never);
     mockedSendLocation.mockResolvedValue({
       status: 'success',
       bus: {
@@ -122,6 +128,52 @@ describe('foreground location watcher lifecycle', () => {
     ReactTestRenderer.act(() => currentHook?.stopTracking());
 
     expect(mockGeolocation.clearWatch).toHaveBeenCalledWith(7);
+  });
+
+  test('starts one private readiness watcher and never broadcasts its fixes', async () => {
+    await ReactTestRenderer.act(async () => {
+      await currentHook?.startReadiness();
+      await currentHook?.startReadiness();
+    });
+
+    expect(mockGeolocation.watchPosition).toHaveBeenCalledTimes(1);
+    expect(readinessLocation).toHaveBeenCalledTimes(1);
+    expect(mockedSendLocation).not.toHaveBeenCalled();
+    expect(currentHook?.mode).toBe('readiness');
+    expect(currentHook?.isReadinessActive).toBe(true);
+  });
+
+  test('readiness heartbeat refreshes location without passenger transmission', async () => {
+    jest.useFakeTimers();
+
+    await ReactTestRenderer.act(async () => {
+      await currentHook?.startReadiness();
+    });
+
+    await ReactTestRenderer.act(async () => {
+      jest.advanceTimersByTime(10000);
+      await Promise.resolve();
+    });
+
+    expect(mockGeolocation.getCurrentPosition).toHaveBeenCalledTimes(2);
+    expect(readinessLocation).toHaveBeenCalledTimes(2);
+    expect(mockedSendLocation).not.toHaveBeenCalled();
+  });
+
+  test('active tracking takes ownership from readiness without duplicate watchers', async () => {
+    let prepared: Awaited<ReturnType<TrackingHook['prepareLocation']>> = null;
+
+    await ReactTestRenderer.act(async () => {
+      await currentHook?.startReadiness();
+      prepared = (await currentHook?.prepareLocation()) || null;
+      await currentHook?.startTracking(prepared || undefined);
+    });
+
+    expect(mockGeolocation.clearWatch).toHaveBeenCalledWith(7);
+    expect(mockGeolocation.watchPosition).toHaveBeenCalledTimes(2);
+    expect(mockedSendLocation).toHaveBeenCalledTimes(1);
+    expect(currentHook?.mode).toBe('active_trip');
+    expect(currentHook?.isReadinessActive).toBe(false);
   });
 
   test('starts one watcher without re-uploading a start location already accepted by backend', async () => {
@@ -334,5 +386,28 @@ describe('foreground location watcher lifecycle', () => {
     expect(mockGeolocation.clearWatch).toHaveBeenCalledWith(7);
     expect(currentHook?.isTracking).toBe(false);
     expect(currentHook?.transmissionStatus).toBe('offline');
+  });
+
+  test('keeps an active-trip watcher and securely queues a transiently offline fix', async () => {
+    mockedSendLocation.mockRejectedValue(new Error('Network unavailable'));
+    let started = false;
+
+    await ReactTestRenderer.act(async () => {
+      started =
+        (await currentHook?.startTracking(undefined, {
+          tripId: 'trip-1',
+        })) || false;
+    });
+
+    expect(started).toBe(true);
+    expect(currentHook?.isTracking).toBe(true);
+    expect(currentHook?.transmissionStatus).toBe('retrying');
+    expect(mockedKeychain.setGenericPassword).toHaveBeenCalledWith(
+      'active-trip-location-queue',
+      expect.stringContaining('trip-1'),
+      expect.objectContaining({ service: 'lk.gamana.driver.location-queue' }),
+    );
+
+    ReactTestRenderer.act(() => currentHook?.stopTracking());
   });
 });

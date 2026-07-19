@@ -143,8 +143,17 @@ export function normalizeBusLocationUpdate(
   const busId = String(bus.bus_id || '').trim();
   const hasLatitude = hasOwn(bus, 'lat');
   const hasLongitude = hasOwn(bus, 'lng');
+  const hasDisplayLatitude = hasOwn(bus, 'displayLatitude');
+  const hasDisplayLongitude = hasOwn(bus, 'displayLongitude');
+  const hasRawLatitude = hasOwn(bus, 'rawLatitude');
+  const hasRawLongitude = hasOwn(bus, 'rawLongitude');
 
-  if (!busId || hasLatitude !== hasLongitude) {
+  if (
+    !busId ||
+    hasLatitude !== hasLongitude ||
+    hasDisplayLatitude !== hasDisplayLongitude ||
+    hasRawLatitude !== hasRawLongitude
+  ) {
     return null;
   }
 
@@ -183,9 +192,23 @@ export function normalizeBusLocationUpdate(
     speed: { minimum: 0, maximum: 200 },
     heading: { minimum: 0, maximum: 359.999999 },
     accuracy: { minimum: 0, maximum: 500 },
+    rawLatitude: { minimum: -90, maximum: 90 },
+    rawLongitude: { minimum: -180, maximum: 180 },
+    displayLatitude: { minimum: -90, maximum: 90 },
+    displayLongitude: { minimum: -180, maximum: 180 },
+    distanceFromRouteMeters: { minimum: 0, maximum: 100000 },
   } as const;
 
-  for (const field of ['speed', 'heading', 'accuracy'] as const) {
+  for (const field of [
+    'speed',
+    'heading',
+    'accuracy',
+    'rawLatitude',
+    'rawLongitude',
+    'displayLatitude',
+    'displayLongitude',
+    'distanceFromRouteMeters',
+  ] as const) {
     if (!hasOwn(bus, field)) {
       continue;
     }
@@ -234,6 +257,18 @@ export function normalizeBusLocationUpdate(
     }
 
     update.isActive = bus.isActive;
+  }
+
+  if (hasOwn(bus, 'isRouteDeviation')) {
+    if (typeof bus.isRouteDeviation !== 'boolean') {
+      return null;
+    }
+
+    update.isRouteDeviation = bus.isRouteDeviation;
+  }
+
+  if (hasOwn(bus, 'direction')) {
+    update.direction = String(bus.direction || '').trim();
   }
 
   if (hasOwn(bus, 'operationalStatus')) {

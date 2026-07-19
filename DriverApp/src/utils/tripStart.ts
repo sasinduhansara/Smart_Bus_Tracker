@@ -7,8 +7,10 @@ export type TripStartPreflightStatus =
   | 'checking_terminal'
   | 'outside_geofence'
   | 'permission_required'
+  | 'gps_unavailable'
   | 'accuracy_low'
   | 'terminal_unavailable'
+  | 'backend_unavailable'
   | 'error';
 
 export interface TripStartErrorPresentation {
@@ -27,8 +29,9 @@ export interface TripStartExecution<TSnapshot, TTrip> {
   startTrip: (location: TripLocation) => Promise<TTrip>;
   startTracking: (
     snapshot: TSnapshot,
-    options: { initialLocationAlreadyAccepted: true },
+    options: { initialLocationAlreadyAccepted: true; tripId?: string },
   ) => Promise<boolean>;
+  getTripId?: (trip: TTrip) => string;
   onStage?: (stage: 'checking_location' | 'checking_terminal') => void;
 }
 
@@ -56,12 +59,13 @@ export async function executeTripStart<TSnapshot, TTrip>(
   const trip = await execution.startTrip(execution.mapLocation(snapshot));
   const watcherStarted = await execution.startTracking(snapshot, {
     initialLocationAlreadyAccepted: true,
+    tripId: execution.getTripId?.(trip),
   });
 
   return { status: 'accepted', snapshot, trip, watcherStarted };
 }
 
-function formatMeters(value: number): string {
+export function formatDistanceMeters(value: number): string {
   if (value >= 1000) {
     return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)} km`;
   }
@@ -73,12 +77,21 @@ export function presentTripStartError(
   error: unknown,
 ): TripStartErrorPresentation {
   if (error instanceof ApiError) {
+    if (error.status === 0) {
+      return {
+        status: 'backend_unavailable',
+        title: 'Backend unavailable',
+        message: error.message,
+        canOpenSettings: false,
+      };
+    }
+
     if (error.code === 'OUTSIDE_START_GEOFENCE') {
       const nearest = error.details?.nearestTerminal;
       const detail = nearest
-        ? `Nearest terminal: ${nearest.name} (${formatMeters(
+        ? `Nearest terminal: ${nearest.name} (${formatDistanceMeters(
             nearest.distanceMeters,
-          )} away). Start within ${formatMeters(
+          )} away). Start within ${formatDistanceMeters(
             nearest.allowedRadiusMeters,
           )} of the terminal.`
         : error.message;
@@ -164,6 +177,19 @@ export function presentGpsPreflightError(
       title: 'Location accuracy is low',
       message:
         message || 'GPS accuracy is too low. Wait for a stronger location fix.',
+      canOpenSettings: true,
+    };
+  }
+
+  if (
+    normalizedMessage.includes('gps is unavailable') ||
+    normalizedMessage.includes('gps unavailable') ||
+    normalizedMessage.includes('gps is disabled')
+  ) {
+    return {
+      status: 'gps_unavailable',
+      title: 'GPS is disabled',
+      message: message || 'Turn on precise device location, then retry.',
       canOpenSettings: true,
     };
   }

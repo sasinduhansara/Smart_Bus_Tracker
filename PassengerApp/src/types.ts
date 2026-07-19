@@ -14,6 +14,13 @@ export interface BusLocationUpdate {
   speed?: number;
   heading?: number;
   accuracy?: number;
+  rawLatitude?: number;
+  rawLongitude?: number;
+  displayLatitude?: number;
+  displayLongitude?: number;
+  distanceFromRouteMeters?: number;
+  isRouteDeviation?: boolean;
+  direction?: string;
   updatedAt?: string;
   statusUpdatedAt?: string;
   tripId?: string;

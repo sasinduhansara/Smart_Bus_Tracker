@@ -4,6 +4,7 @@ import {
 } from '../src/services/api';
 import type { BusLocation } from '../src/types';
 import { getBusStatus } from '../src/utils/busStatus';
+import { getBusDisplayCoordinate } from '../src/utils/busDisplay';
 import {
   mergeBusLocationUpdate,
   mergeBusSnapshot,
@@ -23,6 +24,53 @@ const liveBus: BusLocation = {
 };
 
 describe('passenger bus update contract', () => {
+  it('uses road-aware display coordinates while preserving raw GPS truth', () => {
+    const update = normalizeBusLocation({
+      bus_id: 'WP-NB-1234',
+      routeNumber: '123',
+      lat: 7.469,
+      lng: 80.1,
+      rawLatitude: 7.469,
+      rawLongitude: 80.1,
+      displayLatitude: 7.472,
+      displayLongitude: 80.1,
+      distanceFromRouteMeters: 24,
+      isRouteDeviation: false,
+      direction: 'kuliyapitiya_to_kurunegala',
+      operationalStatus: 'active',
+      isActive: true,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+      driverMobile: 'must-not-be-consumed',
+    });
+
+    expect(update).not.toBeNull();
+    expect(getBusDisplayCoordinate(update!)).toEqual({
+      latitude: 7.472,
+      longitude: 80.1,
+    });
+    expect(update).toMatchObject({
+      lat: 7.469,
+      lng: 80.1,
+      isRouteDeviation: false,
+    });
+    expect(update).not.toHaveProperty('driverMobile');
+  });
+
+  it('keeps one canonical marker identity across subsequent display updates', () => {
+    const current = { [liveBus.bus_id]: liveBus };
+    const next = mergeBusUpdateIntoMap(current, {
+      bus_id: liveBus.bus_id,
+      lat: 6.9272,
+      lng: 79.8613,
+      displayLatitude: 6.92725,
+      displayLongitude: 79.86135,
+      updatedAt: '2026-07-16T12:00:20.000Z',
+    });
+
+    expect(Object.keys(next)).toEqual([liveBus.bus_id]);
+    expect(next[liveBus.bus_id].displayLatitude).toBe(6.92725);
+  });
+
   it('normalizes lifecycle-only updates without requiring coordinates', () => {
     expect(
       normalizeBusLocationUpdate({

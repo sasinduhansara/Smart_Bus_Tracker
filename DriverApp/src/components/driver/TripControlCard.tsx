@@ -22,8 +22,10 @@ export type TripLifecycleStatus =
   | 'checking_terminal'
   | 'outside_geofence'
   | 'permission_required'
+  | 'gps_unavailable'
   | 'accuracy_low'
   | 'terminal_unavailable'
+  | 'backend_unavailable'
   | 'starting'
   | 'active'
   | 'interrupted'
@@ -44,6 +46,7 @@ export interface TripControlCardProps {
   warningMessage?: string;
   disabled?: boolean;
   onStart?: () => void;
+  onRetryLocation?: () => void;
   onPause?: () => void;
   onResume?: () => void;
   onEnd?: () => void;
@@ -89,6 +92,12 @@ const statusPresentation: Record<TripLifecycleStatus, StatusPresentation> = {
     backgroundColor: driverColors.errorSoft,
     foregroundColor: driverColors.error,
   },
+  gps_unavailable: {
+    label: 'GPS is disabled',
+    icon: 'location-outline',
+    backgroundColor: driverColors.errorSoft,
+    foregroundColor: driverColors.error,
+  },
   accuracy_low: {
     label: 'Location accuracy low',
     icon: 'locate-outline',
@@ -98,6 +107,12 @@ const statusPresentation: Record<TripLifecycleStatus, StatusPresentation> = {
   terminal_unavailable: {
     label: 'Route terminal unavailable',
     icon: 'map-outline',
+    backgroundColor: driverColors.errorSoft,
+    foregroundColor: driverColors.error,
+  },
+  backend_unavailable: {
+    label: 'Backend unavailable',
+    icon: 'cloud-offline-outline',
     backgroundColor: driverColors.errorSoft,
     foregroundColor: driverColors.error,
   },
@@ -176,6 +191,7 @@ export function TripControlCard({
   warningMessage,
   disabled = false,
   onStart,
+  onRetryLocation,
   onPause,
   onResume,
   onEnd,
@@ -193,13 +209,16 @@ export function TripControlCard({
         : null
       : status === 'outside_geofence' ||
         status === 'permission_required' ||
+        status === 'gps_unavailable' ||
         status === 'accuracy_low'
-      ? onStart
-        ? { label: 'Retry location', icon: 'locate', callback: onStart }
+      ? onRetryLocation
+        ? { label: 'Retry location', icon: 'locate', callback: onRetryLocation }
         : null
-      : status === 'terminal_unavailable' || status === 'error'
-      ? onStart
-        ? { label: 'Retry preflight', icon: 'refresh', callback: onStart }
+      : status === 'terminal_unavailable' ||
+        status === 'backend_unavailable' ||
+        status === 'error'
+      ? onRetryLocation
+        ? { label: 'Retry preflight', icon: 'refresh', callback: onRetryLocation }
         : null
       : status === 'active'
       ? onPause

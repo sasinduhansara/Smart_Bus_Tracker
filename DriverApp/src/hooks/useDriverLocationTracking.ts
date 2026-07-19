@@ -11,6 +11,12 @@ import {
   sendDriverLocation,
   type DriverLocationResponse,
 } from '../services/api';
+import {
+  clearTripLocationQueue,
+  enqueueTripLocation,
+  getNewestFreshTripLocation,
+  removeQueuedLocationsThrough,
+} from '../services/secureLocationQueue';
 import type { TripLocation } from '../types';
 
 export const LOCATION_SEND_INTERVAL_MS = 7000;
@@ -77,11 +83,15 @@ interface UseDriverLocationTrackingOptions {
     snapshot: DriverLocationSnapshot,
   ) => void;
   onTrackingRejected?: (error: ApiError) => void;
+  onReadinessLocation?: (snapshot: DriverLocationSnapshot) => void;
 }
+
+export type LocationTrackingMode = 'idle' | 'readiness' | 'active_trip';
 
 export interface StartTrackingOptions {
   /** The trip-start endpoint already persisted and broadcast this snapshot. */
   initialLocationAlreadyAccepted?: boolean;
+  tripId?: string;
 }
 
 interface GeolocationService {
@@ -304,15 +314,20 @@ export function useDriverLocationTracking(
   onLocationSentRef.current = onLocationSent;
   const onTrackingRejectedRef = useRef(onTrackingRejected);
   onTrackingRejectedRef.current = onTrackingRejected;
+  const onReadinessLocationRef = useRef(options.onReadinessLocation);
+  onReadinessLocationRef.current = options.onReadinessLocation;
   const mountedRef = useRef(true);
   const permissionStatusRef = useRef<LocationPermissionStatus>('unknown');
   const preflightErrorRef = useRef<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
+  const modeRef = useRef<LocationTrackingMode>('idle');
   const desiredTrackingRef = useRef(false);
+  const readinessDesiredRef = useRef(false);
   const requestInProgressRef = useRef(false);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queuedSendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const readinessTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatPositionRequestRef = useRef(false);
   const appIsActiveRef = useRef(true);
   const requestSettledWaitersRef = useRef<Array<() => void>>([]);
@@ -320,8 +335,11 @@ export function useDriverLocationTracking(
   const latestSnapshotRef = useRef<DriverLocationSnapshot | null>(null);
   const lastSentSnapshotRef = useRef<DriverLocationSnapshot | null>(null);
   const lastSuccessfulSendRef = useRef(0);
+  const activeTripIdRef = useRef<string | null>(null);
 
   const [isTracking, setIsTracking] = useState(false);
+  const [isReadinessActive, setIsReadinessActive] = useState(false);
+  const [mode, setMode] = useState<LocationTrackingMode>('idle');
   const [isStarting, setIsStarting] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [permissionStatus, setPermissionStatus] =
@@ -354,6 +372,13 @@ export function useDriverLocationTracking(
     }
 
     heartbeatPositionRequestRef.current = false;
+  }, []);
+
+  const clearReadinessTimer = useCallback(() => {
+    if (readinessTimerRef.current) {
+      clearInterval(readinessTimerRef.current);
+      readinessTimerRef.current = null;
+    }
   }, []);
 
   const sendSnapshot = useCallback(
@@ -443,6 +468,12 @@ export function useDriverLocationTracking(
         }
 
         onLocationSentRef.current?.(response, snapshot);
+        if (activeTripIdRef.current) {
+          await removeQueuedLocationsThrough(
+            activeTripIdRef.current,
+            snapshot.recordedAt,
+          );
+        }
         return response;
       } catch (sendError) {
         pendingSnapshotRef.current = latestSnapshotRef.current || snapshot;
@@ -460,6 +491,13 @@ export function useDriverLocationTracking(
           'The location could not reach the backend.',
         );
 
+        if (retryable && !trackingRejected && activeTripIdRef.current) {
+          await enqueueTripLocation(
+            activeTripIdRef.current,
+            toTripLocation(snapshot),
+          );
+        }
+
         if (mountedRef.current) {
           setError(message);
           setTransmissionStatus(
@@ -474,6 +512,7 @@ export function useDriverLocationTracking(
 
         if (trackingRejected && apiError) {
           desiredTrackingRef.current = false;
+          modeRef.current = 'idle';
           pendingSnapshotRef.current = null;
           clearRetry();
           clearQueuedSend();
@@ -486,6 +525,7 @@ export function useDriverLocationTracking(
 
           if (mountedRef.current) {
             setIsTracking(false);
+            setMode('idle');
           }
 
           onTrackingRejectedRef.current?.(apiError);
@@ -559,6 +599,10 @@ export function useDriverLocationTracking(
       if (mountedRef.current) {
         setLastLocation(snapshot);
         setError(null);
+      }
+
+      if (modeRef.current === 'readiness') {
+        onReadinessLocationRef.current?.(snapshot);
       }
 
       if (transmit) {
@@ -683,11 +727,130 @@ export function useDriverLocationTracking(
     error: preflightErrorRef.current,
   }), []);
 
+  const stopReadiness = useCallback(() => {
+    readinessDesiredRef.current = false;
+    clearReadinessTimer();
+
+    if (modeRef.current === 'readiness' && watchIdRef.current !== null) {
+      geolocationService.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+
+    if (modeRef.current === 'readiness') {
+      modeRef.current = 'idle';
+      if (mountedRef.current) {
+        setMode('idle');
+      }
+    }
+
+    if (mountedRef.current) {
+      setIsReadinessActive(false);
+    }
+  }, [clearReadinessTimer]);
+
+  const startReadiness = useCallback(async (): Promise<boolean> => {
+    readinessDesiredRef.current = true;
+
+    if (modeRef.current === 'active_trip') {
+      return false;
+    }
+
+    if (modeRef.current === 'readiness' && watchIdRef.current !== null) {
+      return true;
+    }
+
+    const snapshot = await prepareLocation();
+    if (
+      !snapshot ||
+      !readinessDesiredRef.current ||
+      !appIsActiveRef.current
+    ) {
+      return false;
+    }
+
+    const geolocation = await loadGeolocation();
+    if (!geolocation) {
+      return false;
+    }
+
+    modeRef.current = 'readiness';
+    onReadinessLocationRef.current?.(snapshot);
+
+    try {
+      watchIdRef.current = geolocation.watchPosition(
+        position => acceptPosition(position, false),
+        locationError => {
+          if (mountedRef.current) {
+            setError(locationErrorMessage(locationError));
+          }
+        },
+        {
+          ...POSITION_OPTIONS,
+          distanceFilter: 15,
+          interval: LOCATION_SEND_INTERVAL_MS,
+          fastestInterval: 5000,
+          useSignificantChanges: false,
+        },
+      );
+
+      clearReadinessTimer();
+      readinessTimerRef.current = setInterval(() => {
+        if (
+          modeRef.current !== 'readiness' ||
+          !readinessDesiredRef.current ||
+          !appIsActiveRef.current
+        ) {
+          return;
+        }
+
+        geolocation.getCurrentPosition(
+          position => acceptPosition(position, false),
+          locationError => {
+            if (mountedRef.current) {
+              setError(locationErrorMessage(locationError));
+            }
+          },
+          POSITION_OPTIONS,
+        );
+      }, 10000);
+
+      if (mountedRef.current) {
+        setMode('readiness');
+        setIsReadinessActive(true);
+      }
+      return true;
+    } catch (readinessError) {
+      stopReadiness();
+      if (mountedRef.current) {
+        setError(errorMessage(readinessError, 'Location readiness could not start.'));
+      }
+      return false;
+    }
+  }, [
+    acceptPosition,
+    clearReadinessTimer,
+    prepareLocation,
+    stopReadiness,
+  ]);
+
   const startTracking = useCallback(
     async (
       preparedSnapshot?: DriverLocationSnapshot,
       trackingOptions: StartTrackingOptions = {},
     ): Promise<boolean> => {
+      if (trackingOptions.tripId) {
+        activeTripIdRef.current = trackingOptions.tripId;
+      }
+      readinessDesiredRef.current = false;
+      clearReadinessTimer();
+      if (modeRef.current === 'readiness' && watchIdRef.current !== null) {
+        geolocationService.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      if (mountedRef.current) {
+        setIsReadinessActive(false);
+      }
+
       if (watchIdRef.current !== null) {
         desiredTrackingRef.current = true;
         if (lastSuccessfulSendRef.current > 0) {
@@ -709,10 +872,31 @@ export function useDriverLocationTracking(
         return Boolean(retryResponse);
       }
 
-      const snapshot = preparedSnapshot || (await prepareLocation());
+      let snapshot = preparedSnapshot || (await prepareLocation());
 
       if (!snapshot) {
         return false;
+      }
+
+      const activeTripId = activeTripIdRef.current;
+      if (activeTripId && trackingOptions.initialLocationAlreadyAccepted) {
+        await clearTripLocationQueue(activeTripId);
+      } else if (activeTripId) {
+        const queuedLocation = await getNewestFreshTripLocation(activeTripId);
+        if (
+          queuedLocation &&
+          new Date(queuedLocation.timestamp).getTime() >
+            new Date(snapshot.recordedAt).getTime()
+        ) {
+          snapshot = {
+            latitude: queuedLocation.lat,
+            longitude: queuedLocation.lng,
+            speedKmh: queuedLocation.speed || 0,
+            heading: queuedLocation.heading || 0,
+            accuracy: queuedLocation.accuracy,
+            recordedAt: queuedLocation.timestamp,
+          };
+        }
       }
 
       const geolocation = await loadGeolocation();
@@ -725,6 +909,7 @@ export function useDriverLocationTracking(
       }
 
       desiredTrackingRef.current = true;
+      modeRef.current = 'active_trip';
       const backendAcceptedAt = trackingOptions.initialLocationAlreadyAccepted
         ? new Date()
         : null;
@@ -756,6 +941,7 @@ export function useDriverLocationTracking(
         );
 
         if (mountedRef.current) {
+          setMode('active_trip');
           setIsTracking(true);
           setIsStarting(true);
         }
@@ -775,7 +961,20 @@ export function useDriverLocationTracking(
         const initialResponse = await sendSnapshot(snapshot, true);
 
         if (!initialResponse) {
+          if (
+            activeTripIdRef.current &&
+            desiredTrackingRef.current &&
+            watchIdRef.current !== null
+          ) {
+            startHeartbeat(geolocation);
+            if (mountedRef.current) {
+              setIsStarting(false);
+            }
+            return true;
+          }
+
           desiredTrackingRef.current = false;
+          modeRef.current = 'idle';
           clearRetry();
           clearQueuedSend();
           clearHeartbeat();
@@ -790,6 +989,7 @@ export function useDriverLocationTracking(
 
           if (mountedRef.current) {
             setIsTracking(false);
+            setMode('idle');
             setIsStarting(false);
             setTransmissionStatus(currentStatus =>
               currentStatus === 'rejected' ? 'rejected' : 'offline',
@@ -805,6 +1005,7 @@ export function useDriverLocationTracking(
         return true;
       } catch (startError) {
         desiredTrackingRef.current = false;
+        modeRef.current = 'idle';
         if (backendAcceptedAt) {
           lastSuccessfulSendRef.current = 0;
           lastSentSnapshotRef.current = null;
@@ -812,6 +1013,7 @@ export function useDriverLocationTracking(
 
         if (mountedRef.current) {
           setIsTracking(false);
+          setMode('idle');
           setIsStarting(false);
           setError(errorMessage(startError, 'GPS tracking could not start.'));
         }
@@ -823,6 +1025,7 @@ export function useDriverLocationTracking(
       clearHeartbeat,
       clearQueuedSend,
       clearRetry,
+      clearReadinessTimer,
       prepareLocation,
       sendSnapshot,
       startHeartbeat,
@@ -831,9 +1034,12 @@ export function useDriverLocationTracking(
 
   const stopTracking = useCallback(() => {
     desiredTrackingRef.current = false;
+    readinessDesiredRef.current = false;
+    modeRef.current = 'idle';
     clearRetry();
     clearQueuedSend();
     clearHeartbeat();
+    clearReadinessTimer();
 
     if (watchIdRef.current !== null) {
       geolocationService.clearWatch(watchIdRef.current);
@@ -843,14 +1049,17 @@ export function useDriverLocationTracking(
     pendingSnapshotRef.current = null;
     lastSuccessfulSendRef.current = 0;
     lastSentSnapshotRef.current = null;
+    activeTripIdRef.current = null;
 
     if (mountedRef.current) {
       setIsTracking(false);
+      setIsReadinessActive(false);
+      setMode('idle');
       setIsStarting(false);
       setIsSending(false);
       setTransmissionStatus('idle');
     }
-  }, [clearHeartbeat, clearQueuedSend, clearRetry]);
+  }, [clearHeartbeat, clearQueuedSend, clearReadinessTimer, clearRetry]);
 
   const flushLatestLocation = useCallback(async () => {
     let snapshot = latestSnapshotRef.current;
@@ -872,19 +1081,30 @@ export function useDriverLocationTracking(
         clearRetry();
         clearQueuedSend();
         clearHeartbeat();
+        clearReadinessTimer();
         if (mountedRef.current) {
           setIsTracking(false);
+          setIsReadinessActive(false);
         }
         return;
       }
 
       if (nextState === 'active' && desiredTrackingRef.current) {
         startTracking().catch(() => undefined);
+      } else if (nextState === 'active' && readinessDesiredRef.current) {
+        startReadiness().catch(() => undefined);
       }
     });
 
     return () => subscription.remove();
-  }, [clearHeartbeat, clearQueuedSend, clearRetry, startTracking]);
+  }, [
+    clearHeartbeat,
+    clearQueuedSend,
+    clearReadinessTimer,
+    clearRetry,
+    startReadiness,
+    startTracking,
+  ]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -895,6 +1115,7 @@ export function useDriverLocationTracking(
       clearRetry();
       clearQueuedSend();
       clearHeartbeat();
+      clearReadinessTimer();
 
       if (watchIdRef.current !== null) {
         geolocationService.clearWatch(watchIdRef.current);
@@ -902,10 +1123,12 @@ export function useDriverLocationTracking(
 
       watchIdRef.current = null;
     };
-  }, [clearHeartbeat, clearQueuedSend, clearRetry]);
+  }, [clearHeartbeat, clearQueuedSend, clearReadinessTimer, clearRetry]);
 
   return {
     isTracking,
+    isReadinessActive,
+    mode,
     isStarting,
     isSending,
     permissionStatus,
@@ -915,6 +1138,8 @@ export function useDriverLocationTracking(
     error,
     prepareLocation,
     getPreflightFailure,
+    startReadiness,
+    stopReadiness,
     startTracking,
     stopTracking,
     flushLatestLocation,

@@ -1,4 +1,5 @@
 import math
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -13,6 +14,11 @@ from services.driver_trip_service import (
     build_safe_bus_payload,
     driver_reference_query,
 )
+from services.geospatial_service import (
+    ROUTE_DEVIATION_CONFIRMATION_COUNT,
+    match_location_to_route,
+)
+from services.route_service import get_route_details
 from utils.auth_utils import jwt_required, roles_required
 
 
@@ -21,9 +27,17 @@ bus_bp = Blueprint("bus_bp", __name__)
 MAX_LOCATION_AGE_SECONDS = 120
 MAX_LOCATION_FUTURE_SECONDS = 30
 MAX_LOCATION_ACCURACY_METERS = 500
-LEGACY_BUS_RECENCY_SECONDS = 120
+try:
+    LEGACY_BUS_RECENCY_SECONDS = max(
+        int(os.getenv("BUS_LOCATION_TTL_SECONDS", "120")),
+        30,
+    )
+except ValueError:
+    LEGACY_BUS_RECENCY_SECONDS = 120
 MAX_REASONABLE_SPEED_KMH = 200
 MOVEMENT_TOLERANCE_KM = 0.25
+SRI_LANKA_LATITUDE_RANGE = (5.5, 10.2)
+SRI_LANKA_LONGITUDE_RANGE = (79.0, 82.5)
 
 
 def parse_number(value: Any, minimum: float, maximum: float):
@@ -125,6 +139,19 @@ def update_location():
         return jsonify({
             "error": "Valid latitude and longitude are required",
         }), 400
+
+    if not (
+        SRI_LANKA_LATITUDE_RANGE[0]
+        <= latitude
+        <= SRI_LANKA_LATITUDE_RANGE[1]
+        and SRI_LANKA_LONGITUDE_RANGE[0]
+        <= longitude
+        <= SRI_LANKA_LONGITUDE_RANGE[1]
+    ):
+        return jsonify({
+            "error": "The GPS coordinate is outside the supported service area",
+            "code": "OUTSIDE_SERVICE_AREA",
+        }), 422
 
     speed = parse_optional_number(data.get("speed"), 0, 200)
     if data.get("speed") is not None and speed is None:
@@ -229,6 +256,8 @@ def update_location():
             "code": "ASSIGNMENT_CHANGED",
         }), 409
 
+    route = get_route_details(route_number)
+
     existing_bus = buses_collection.find_one(
         {"bus_id": bus_id},
         {"clientTimestamp": 1, "statusUpdatedAt": 1},
@@ -308,11 +337,36 @@ def update_location():
 
             distance_increment_km = round(candidate_distance_km, 6)
 
+    route_match = match_location_to_route(
+        latitude,
+        longitude,
+        route.get("polyline") if route else [],
+    )
+    previous_deviation_count = int(
+        active_trip.get("routeDeviationConsecutiveCount", 0) or 0,
+    )
+    accurate_deviation_candidate = (
+        accuracy <= 100 and route_match["isRouteDeviationCandidate"]
+    )
+    route_deviation_count = (
+        previous_deviation_count + 1 if accurate_deviation_candidate else 0
+    )
+    is_route_deviation = (
+        route_deviation_count >= ROUTE_DEVIATION_CONFIRMATION_COUNT
+    )
+    public_route_match = {
+        key: value
+        for key, value in route_match.items()
+        if key != "isRouteDeviationCandidate"
+    }
+    public_route_match["isRouteDeviation"] = is_route_deviation
+
     location = {
         "lat": latitude,
         "lng": longitude,
         "accuracy": accuracy,
         "timestamp": client_timestamp,
+        **public_route_match,
     }
     if speed is not None:
         location["speed"] = speed
@@ -333,6 +387,8 @@ def update_location():
                 "lastLocation": location,
                 "lastLocationAt": received_at,
                 "updatedAt": received_at,
+                "routeDeviationConsecutiveCount": route_deviation_count,
+                "isRouteDeviation": is_route_deviation,
             },
             "$inc": {
                 "distanceKm": distance_increment_km,
@@ -362,6 +418,9 @@ def update_location():
         "activeTripId": trip_id,
         "tripId": trip_id,
         "statusUpdatedAt": received_at,
+        "lastSeenAt": received_at,
+        "direction": active_trip.get("direction"),
+        **public_route_match,
     }
     if speed is not None:
         bus_update["speed"] = speed
@@ -392,7 +451,11 @@ def update_location():
     }
 
     def rollback_trip_location():
-        rollback = {"$set": {"updatedAt": active_trip.get("updatedAt")}}
+        rollback = {"$set": {
+            "updatedAt": active_trip.get("updatedAt"),
+            "routeDeviationConsecutiveCount": previous_deviation_count,
+            "isRouteDeviation": bool(active_trip.get("isRouteDeviation")),
+        }}
         rollback["$inc"] = {
             "distanceKm": -distance_increment_km,
             "locationUpdateCount": -1,
@@ -451,6 +514,8 @@ def update_location():
         location={
             "lat": latitude,
             "lng": longitude,
+            **public_route_match,
+            "direction": active_trip.get("direction"),
             "speed": speed,
             "heading": heading,
             "updatedAt": received_at.isoformat(),
@@ -500,7 +565,15 @@ def get_buses():
             "speed": 1,
             "heading": 1,
             "accuracy": 1,
+            "rawLatitude": 1,
+            "rawLongitude": 1,
+            "displayLatitude": 1,
+            "displayLongitude": 1,
+            "distanceFromRouteMeters": 1,
+            "isRouteDeviation": 1,
+            "direction": 1,
             "updatedAt": 1,
+            "lastSeenAt": 1,
             "operationalStatus": 1,
             "isActive": 1,
             "activeTripId": 1,

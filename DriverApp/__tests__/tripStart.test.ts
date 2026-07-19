@@ -61,6 +61,26 @@ describe('trip-start UI error presentation', () => {
     });
   });
 
+  test('shows explicit GPS-disabled and backend-unavailable states', () => {
+    expect(
+      presentGpsPreflightError('granted', 'GPS is unavailable. Turn it on.'),
+    ).toMatchObject({
+      status: 'gps_unavailable',
+      title: 'GPS is disabled',
+      canOpenSettings: true,
+    });
+
+    expect(
+      presentTripStartError(
+        new ApiError('Backend unavailable.', 0, 'NETWORK_ERROR'),
+      ),
+    ).toMatchObject({
+      status: 'backend_unavailable',
+      title: 'Backend unavailable',
+      canOpenSettings: false,
+    });
+  });
+
   test('fails safely when the route has no configured terminals', () => {
     expect(
       presentTripStartError(
@@ -106,6 +126,7 @@ describe('trip-start execution order', () => {
       mapLocation: () => location,
       startTrip,
       startTracking,
+      getTripId: trip => trip.id,
     });
 
     expect(calls).toEqual(['location', 'backend', 'watcher']);
@@ -113,6 +134,7 @@ describe('trip-start execution order', () => {
     expect(startTracking).toHaveBeenCalledTimes(1);
     expect(startTracking).toHaveBeenCalledWith(snapshot, {
       initialLocationAlreadyAccepted: true,
+      tripId: 'trip-1',
     });
     expect(result).toMatchObject({
       status: 'accepted',

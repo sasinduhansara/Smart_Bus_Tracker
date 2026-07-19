@@ -17,6 +17,7 @@ import type {
   TripHistoryResponse,
   TripLocation,
   TripMutationResponse,
+  TripReadinessResponse,
   VerifyOTPResponse,
 } from '../types';
 
@@ -59,6 +60,7 @@ export interface NearestTerminalDetails {
   id?: string;
   name: string;
   distanceMeters: number;
+  remainingDistanceMeters?: number;
   allowedRadiusMeters: number;
 }
 
@@ -443,6 +445,14 @@ export function startDriverTrip(
   location: TripLocation,
 ): Promise<TripMutationResponse> {
   return post<TripMutationResponse>('/api/driver/trips/start', { location });
+}
+
+export function checkTripReadiness(
+  location: TripLocation,
+): Promise<TripReadinessResponse> {
+  return post<TripReadinessResponse>('/api/driver/trips/readiness', {
+    location,
+  });
 }
 
 export function pauseDriverTrip(tripId: string): Promise<TripMutationResponse> {

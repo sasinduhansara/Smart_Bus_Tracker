@@ -184,6 +184,30 @@ export interface TripMutationResponse {
   bus: LiveBusLocation;
 }
 
+export interface TripReadinessTerminal {
+  id: string;
+  name: string;
+  distanceMeters: number;
+  remainingDistanceMeters: number;
+  allowedRadiusMeters: number;
+}
+
+export interface TripReadinessResponse {
+  success: true;
+  routeNumber: string;
+  locationFresh: boolean;
+  accuracyAcceptable: boolean;
+  canStart: boolean;
+  nearestTerminal: TripReadinessTerminal;
+  direction: {
+    value: string;
+    origin: string;
+    destination: string;
+  } | null;
+  code: 'READY_TO_START' | 'OUTSIDE_START_GEOFENCE';
+  message: string;
+}
+
 export interface CoordinatePoint {
   latitude: number;
   longitude: number;
@@ -263,6 +287,13 @@ export interface LiveBusLocation {
   speed?: number;
   heading?: number;
   accuracy?: number;
+  rawLatitude?: number;
+  rawLongitude?: number;
+  displayLatitude?: number;
+  displayLongitude?: number;
+  distanceFromRouteMeters?: number;
+  isRouteDeviation?: boolean;
+  direction?: string;
   updatedAt?: string;
   statusUpdatedAt?: string;
   tripId?: string;

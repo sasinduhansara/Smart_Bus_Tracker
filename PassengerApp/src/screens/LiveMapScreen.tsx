@@ -24,6 +24,11 @@ import MapView, {
 } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import AnimatedBusMarker from '../components/map/AnimatedBusMarker';
+import {
+  formatBusDirection,
+  getBusDisplayCoordinate,
+} from '../utils/busDisplay';
 import {
   getBuses,
   getRouteDetails,
@@ -533,10 +538,10 @@ function LiveMapScreen({
         setSelectedStopId(null);
       }
 
+      const displayCoordinate = getBusDisplayCoordinate(bus);
       mapRef.current?.animateToRegion(
         {
-          latitude: bus.lat,
-          longitude: bus.lng,
+          ...displayCoordinate,
           latitudeDelta: 0.03,
           longitudeDelta: 0.03,
         },
@@ -726,29 +731,13 @@ function LiveMapScreen({
     const busStatus = getBusStatus(bus, now);
 
     return (
-      <Marker
+      <AnimatedBusMarker
         key={bus.bus_id}
-        coordinate={{
-          latitude: bus.lat,
-          longitude: bus.lng,
-        }}
-        title={bus.vehicleRegistrationNumber || bus.bus_id}
-        description={bus.routeNumber ? `Route ${bus.routeNumber}` : undefined}
-        rotation={bus.heading || 0}
-        anchor={{ x: 0.5, y: 0.5 }}
+        bus={bus}
+        borderColor={statusColor(busStatus)}
+        selected={isSelected}
         onPress={() => handleSelectBus(bus)}
-        zIndex={isSelected ? 10 : 5}
-      >
-        <View
-          style={[
-            styles.busMarker,
-            { borderColor: statusColor(busStatus) },
-            isSelected && styles.busMarkerSelected,
-          ]}
-        >
-          <Text style={styles.busMarkerText}>BUS</Text>
-        </View>
-      </Marker>
+      />
     );
   };
 
@@ -845,8 +834,14 @@ function LiveMapScreen({
         </View>
 
         <Text style={styles.coordinateText}>
-          {selectedBus.lat.toFixed(5)}, {selectedBus.lng.toFixed(5)}
+          {formatBusDirection(selectedBus.direction)}
         </Text>
+
+        {selectedBus.isRouteDeviation ? (
+          <Text style={styles.errorText}>
+            Bus location is currently outside the assigned route.
+          </Text>
+        ) : null}
 
         {routeLoading && (
           <View style={styles.inlineState}>

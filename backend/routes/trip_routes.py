@@ -29,6 +29,7 @@ from services.driver_trip_service import (
     serialize_trip,
     utc_now,
 )
+from services.geospatial_service import match_location_to_route
 from services.route_service import get_route_details
 from utils.auth_utils import jwt_required, roles_required
 
@@ -49,6 +50,8 @@ MAX_ISSUE_MESSAGE_LENGTH = 1000
 MAX_TRIP_START_LOCATION_AGE_SECONDS = 30
 MAX_TRIP_START_LOCATION_FUTURE_SECONDS = 10
 MAX_TRIP_START_ACCURACY_METERS = 100
+SRI_LANKA_LATITUDE_RANGE = (5.5, 10.2)
+SRI_LANKA_LONGITUDE_RANGE = (79.0, 82.5)
 
 
 class BusStatusConflict(Exception):
@@ -86,6 +89,20 @@ def _parse_trip_start_location(data: Any, now: datetime):
             "The GPS coordinates are invalid.",
             "LOCATION_INVALID",
             400,
+        )
+
+    if not (
+        SRI_LANKA_LATITUDE_RANGE[0]
+        <= latitude
+        <= SRI_LANKA_LATITUDE_RANGE[1]
+        and SRI_LANKA_LONGITUDE_RANGE[0]
+        <= longitude
+        <= SRI_LANKA_LONGITUDE_RANGE[1]
+    ):
+        return None, _trip_start_error(
+            "The GPS coordinate is outside the supported service area.",
+            "OUTSIDE_SERVICE_AREA",
+            422,
         )
 
     accuracy = parse_number(
@@ -196,6 +213,79 @@ def _destination_route_terminal(
             terminal["longitude"],
         ),
     )
+
+
+def _evaluate_trip_readiness(
+    driver: dict[str, Any],
+    data: Any,
+    now: datetime,
+):
+    bus_id, route_number, assignment_error = _approved_assignment(driver)
+    if assignment_error:
+        return None, assignment_error
+
+    route = get_route_details(route_number)
+    if route is None:
+        return None, _trip_start_error(
+            "The assigned route does not exist.",
+            "ROUTE_NOT_FOUND",
+            409,
+            routeNumber=route_number,
+        )
+
+    terminals = route.get("terminals") or []
+    if len(terminals) < 2:
+        return None, _trip_start_error(
+            "The assigned route does not have trip-start terminals configured.",
+            "ROUTE_TERMINALS_NOT_CONFIGURED",
+            409,
+            routeNumber=route_number,
+        )
+
+    start_location, location_error = _parse_trip_start_location(data, now)
+    if location_error:
+        return None, location_error
+
+    nearest_distance_meters, start_terminal = _nearest_route_terminal(
+        start_location,
+        terminals,
+    )
+    allowed_radius_meters = float(start_terminal["startRadiusMeters"])
+    destination_terminal = _destination_route_terminal(
+        start_terminal,
+        terminals,
+    )
+    if destination_terminal is None:
+        return None, _trip_start_error(
+            "The assigned route does not have a destination terminal configured.",
+            "ROUTE_TERMINALS_NOT_CONFIGURED",
+            409,
+            routeNumber=route_number,
+        )
+
+    can_start = nearest_distance_meters <= allowed_radius_meters
+    nearest_terminal_payload = {
+        "id": start_terminal["id"],
+        "name": start_terminal["name"],
+        "distanceMeters": round(nearest_distance_meters),
+        "remainingDistanceMeters": round(
+            max(nearest_distance_meters - allowed_radius_meters, 0),
+        ),
+        "allowedRadiusMeters": round(allowed_radius_meters),
+    }
+    return {
+        "busId": bus_id,
+        "routeNumber": route_number,
+        "route": route,
+        "location": start_location,
+        "startTerminal": start_terminal,
+        "destinationTerminal": destination_terminal,
+        "canStart": can_start,
+        "nearestTerminal": nearest_terminal_payload,
+        "direction": (
+            f'{start_terminal["id"]}_to_{destination_terminal["id"]}'
+        ),
+    }, None
 
 
 def _authenticated_driver():
@@ -435,6 +525,54 @@ def get_trip_history():
     })
 
 
+@trip_bp.route("/api/driver/trips/readiness", methods=["POST"])
+@jwt_required
+@roles_required("driver")
+def trip_readiness():
+    driver, _driver_id, error_response = _authenticated_driver()
+    if error_response:
+        return error_response
+
+    readiness, readiness_error = _evaluate_trip_readiness(
+        driver,
+        request.get_json(silent=True) or {},
+        utc_now(),
+    )
+    if readiness_error:
+        return readiness_error
+
+    can_start = readiness["canStart"]
+    start_terminal = readiness["startTerminal"]
+    destination_terminal = readiness["destinationTerminal"]
+    nearest_terminal = readiness["nearestTerminal"]
+    return jsonify({
+        "success": True,
+        "routeNumber": readiness["routeNumber"],
+        "locationFresh": True,
+        "accuracyAcceptable": True,
+        "canStart": can_start,
+        "nearestTerminal": nearest_terminal,
+        "direction": (
+            {
+                "value": readiness["direction"],
+                "origin": start_terminal["name"],
+                "destination": destination_terminal["name"],
+            }
+            if can_start
+            else None
+        ),
+        "code": "READY_TO_START" if can_start else "OUTSIDE_START_GEOFENCE",
+        "message": (
+            f'Ready to start toward {destination_terminal["name"]}.'
+            if can_start
+            else (
+                f'Move {nearest_terminal["remainingDistanceMeters"]} metres '
+                f'closer to {start_terminal["name"]} to start this trip.'
+            )
+        ),
+    })
+
+
 @trip_bp.route("/api/driver/trips/start", methods=["POST"])
 @jwt_required
 @roles_required("driver")
@@ -443,64 +581,29 @@ def start_trip():
     if error_response:
         return error_response
 
-    bus_id, route_number, assignment_error = _approved_assignment(driver)
-    if assignment_error:
-        return assignment_error
-
-    route = get_route_details(route_number)
-    if route is None:
-        return _trip_start_error(
-            "The assigned route does not exist.",
-            "ROUTE_NOT_FOUND",
-            409,
-            routeNumber=route_number,
-        )
-
-    terminals = route.get("terminals") or []
-    if len(terminals) < 2:
-        return _trip_start_error(
-            "The assigned route does not have trip-start terminals configured.",
-            "ROUTE_TERMINALS_NOT_CONFIGURED",
-            409,
-            routeNumber=route_number,
-        )
-
     now = utc_now()
-    data = request.get_json(silent=True) or {}
-    start_location, location_error = _parse_trip_start_location(data, now)
-    if location_error:
-        return location_error
-
-    nearest_distance_meters, start_terminal = _nearest_route_terminal(
-        start_location,
-        terminals,
+    readiness, readiness_error = _evaluate_trip_readiness(
+        driver,
+        request.get_json(silent=True) or {},
+        now,
     )
-    allowed_radius_meters = float(start_terminal["startRadiusMeters"])
-    nearest_terminal_payload = {
-        "id": start_terminal["id"],
-        "name": start_terminal["name"],
-        "distanceMeters": round(nearest_distance_meters),
-        "allowedRadiusMeters": round(allowed_radius_meters),
-    }
-    if nearest_distance_meters > allowed_radius_meters:
+    if readiness_error:
+        return readiness_error
+
+    if not readiness["canStart"]:
         return _trip_start_error(
             "Move closer to an approved route terminal to start this trip.",
             "OUTSIDE_START_GEOFENCE",
             403,
-            nearestTerminal=nearest_terminal_payload,
+            nearestTerminal=readiness["nearestTerminal"],
         )
 
-    destination_terminal = _destination_route_terminal(
-        start_terminal,
-        terminals,
-    )
-    if destination_terminal is None:
-        return _trip_start_error(
-            "The assigned route does not have a destination terminal configured.",
-            "ROUTE_TERMINALS_NOT_CONFIGURED",
-            409,
-            routeNumber=route_number,
-        )
+    bus_id = readiness["busId"]
+    route_number = readiness["routeNumber"]
+    route = readiness["route"]
+    start_location = readiness["location"]
+    start_terminal = readiness["startTerminal"]
+    destination_terminal = readiness["destinationTerminal"]
 
     existing_trip = _find_open_trip(driver_id)
     if existing_trip:
@@ -520,12 +623,18 @@ def start_trip():
             "code": "BUS_TRIP_CONFLICT",
         }), 409
 
-    direction = f'{start_terminal["id"]}_to_{destination_terminal["id"]}'
+    direction = readiness["direction"]
+    route_match = match_location_to_route(
+        start_location["lat"],
+        start_location["lng"],
+        route.get("polyline") or [],
+    )
     initial_trip_location = {
         "lat": start_location["lat"],
         "lng": start_location["lng"],
         "accuracy": start_location["accuracy"],
         "timestamp": start_location["timestamp"],
+        **route_match,
     }
     if start_location.get("speed") is not None:
         initial_trip_location["speed"] = start_location["speed"]
@@ -561,6 +670,8 @@ def start_trip():
         "totalPausedSeconds": 0,
         "distanceKm": 0,
         "locationUpdateCount": 1,
+        "routeDeviationConsecutiveCount": 0,
+        "isRouteDeviation": False,
     }
 
     try:
@@ -615,6 +726,9 @@ def start_trip():
                 "accuracy": start_location["accuracy"],
                 "clientTimestamp": start_location["timestamp"],
                 "updatedAt": now,
+                "direction": direction,
+                **route_match,
+                "isRouteDeviation": False,
             },
         )
     except BusStatusConflict:

@@ -4,6 +4,7 @@ jest.mock('../src/services/secureSession', () => ({
 
 import {
   ApiError,
+  checkTripReadiness,
   completeDriverTrip,
   configureUnauthorizedHandler,
   sendDriverLocation,
@@ -80,6 +81,32 @@ describe('Driver API contracts', () => {
       /\/api\/driver\/trips\/trip%2Funsafe\/complete$/,
     );
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({});
+  });
+
+  test('checks trip readiness with the same fresh coordinate contract', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        success: true,
+        routeNumber: '123',
+        canStart: false,
+        nearestTerminal: {
+          id: 'kuliyapitiya',
+          name: 'Kuliyapitiya Bus Stand',
+          distanceMeters: 1840,
+          remainingDistanceMeters: 1340,
+          allowedRadiusMeters: 500,
+        },
+        direction: null,
+        code: 'OUTSIDE_START_GEOFENCE',
+      }),
+    );
+
+    await checkTripReadiness(location);
+
+    expect(fetchMock.mock.calls[0][0]).toMatch(
+      /\/api\/driver\/trips\/readiness$/,
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ location });
   });
 
   test('preserves safe nearest-terminal details from a rejected start', async () => {

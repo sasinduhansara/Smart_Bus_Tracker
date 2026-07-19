@@ -235,6 +235,8 @@ class DriverBackendContractTests(unittest.TestCase):
         self.assertEqual(bus_update["operationalStatus"], "active")
         self.assertEqual(bus_update["lat"], 7.4688)
         self.assertEqual(bus_update["lng"], 80.0401)
+        self.assertEqual(bus_update["rawLatitude"], 7.4688)
+        self.assertEqual(bus_update["rawLongitude"], 80.0401)
         self.assertEqual(bus_update["accuracy"], 8)
         self.assertNotIn("nic", payload["bus"])
         self.assertNotIn("driver_id", payload["bus"])
@@ -409,6 +411,96 @@ class DriverBackendContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.get_json()["code"], "BUS_NOT_ASSIGNED")
         test_config.trips_collection.insert_one.assert_not_called()
+
+    @patch.object(trip_routes, "get_route_details", return_value=route_details())
+    def test_readiness_inside_terminal_allows_start_and_returns_direction(
+        self,
+        get_route,
+    ):
+        test_config.drivers_collection.find_one.return_value = approved_driver()
+
+        response = self.client.post(
+            "/api/driver/trips/readiness",
+            headers=self.headers,
+            json=fresh_start_location(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["canStart"])
+        self.assertEqual(payload["code"], "READY_TO_START")
+        self.assertEqual(payload["nearestTerminal"]["id"], "kuliyapitiya")
+        self.assertEqual(payload["nearestTerminal"]["remainingDistanceMeters"], 0)
+        self.assertEqual(
+            payload["direction"]["destination"],
+            "Kurunegala Bus Stand",
+        )
+        test_config.trips_collection.insert_one.assert_not_called()
+        test_config.buses_collection.update_one.assert_not_called()
+
+    @patch.object(trip_routes, "get_route_details", return_value=route_details())
+    def test_readiness_outside_returns_nearest_terminal_and_remaining_distance(
+        self,
+        get_route,
+    ):
+        test_config.drivers_collection.find_one.return_value = approved_driver()
+
+        response = self.client.post(
+            "/api/driver/trips/readiness",
+            headers=self.headers,
+            json=fresh_start_location(7.46, 80.02),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload["canStart"])
+        self.assertEqual(payload["code"], "OUTSIDE_START_GEOFENCE")
+        self.assertEqual(payload["nearestTerminal"]["id"], "kuliyapitiya")
+        self.assertGreater(
+            payload["nearestTerminal"]["remainingDistanceMeters"],
+            0,
+        )
+        self.assertIsNone(payload["direction"])
+
+    @patch.object(trip_routes, "get_route_details", return_value=route_details())
+    def test_readiness_rejects_reversed_sri_lanka_coordinates(self, get_route):
+        test_config.drivers_collection.find_one.return_value = approved_driver()
+
+        response = self.client.post(
+            "/api/driver/trips/readiness",
+            headers=self.headers,
+            json=fresh_start_location(80.0401, 7.4688),
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.get_json()["code"], "OUTSIDE_SERVICE_AREA")
+
+    @patch.object(trip_routes, "get_route_details", return_value=route_details())
+    def test_readiness_rejects_stale_and_poor_accuracy_locations(self, get_route):
+        test_config.drivers_collection.find_one.return_value = approved_driver()
+        stale = fresh_start_location()
+        stale["location"]["timestamp"] = (
+            datetime.now(timezone.utc) - timedelta(minutes=2)
+        ).isoformat()
+
+        stale_response = self.client.post(
+            "/api/driver/trips/readiness",
+            headers=self.headers,
+            json=stale,
+        )
+        accuracy_response = self.client.post(
+            "/api/driver/trips/readiness",
+            headers=self.headers,
+            json=fresh_start_location(accuracy=101),
+        )
+
+        self.assertEqual(stale_response.status_code, 409)
+        self.assertEqual(stale_response.get_json()["code"], "LOCATION_STALE")
+        self.assertEqual(accuracy_response.status_code, 422)
+        self.assertEqual(
+            accuracy_response.get_json()["code"],
+            "LOCATION_ACCURACY_TOO_LOW",
+        )
 
     def test_start_trip_rejects_unapproved_driver(self):
         driver = approved_driver()
@@ -663,8 +755,28 @@ class DriverBackendContractTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    def test_location_rejects_reversed_sri_lanka_coordinates(self):
+        response = self.client.post(
+            "/api/location",
+            headers=self.headers,
+            json={
+                "lat": 79.8,
+                "lng": 6.9,
+                "accuracy": 10,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.get_json()["code"], "OUTSIDE_SERVICE_AREA")
+
     @patch.object(bus_routes.socketio, "emit")
-    def test_location_persists_trip_and_emits_public_safe_payload(self, emit):
+    @patch.object(bus_routes, "get_route_details", return_value=route_details())
+    def test_location_persists_trip_and_emits_public_safe_payload(
+        self,
+        get_route,
+        emit,
+    ):
         test_config.drivers_collection.find_one.return_value = approved_driver()
         test_config.trips_collection.find_one.return_value = canonical_trip()
         test_config.trips_collection.update_one.return_value = SimpleNamespace(
@@ -696,12 +808,64 @@ class DriverBackendContractTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["tripId"], str(TRIP_ID))
         self.assertEqual(payload["bus"]["operationalStatus"], "active")
+        self.assertEqual(payload["bus"]["rawLatitude"], 6.9)
+        self.assertEqual(payload["bus"]["rawLongitude"], 79.8)
+        self.assertEqual(payload["bus"]["displayLatitude"], 6.9)
+        self.assertEqual(payload["bus"]["displayLongitude"], 79.8)
+        self.assertNotIn("isRouteDeviationCandidate", payload["bus"])
         self.assertNotIn("driver_id", payload["bus"])
         self.assertNotIn("nic", payload["bus"])
         trip_update = test_config.trips_collection.update_one.call_args.args[1]
         self.assertEqual(trip_update["$inc"]["locationUpdateCount"], 1)
         self.assertEqual(trip_update["$inc"]["distanceKm"], 0)
         emit.assert_called_once_with("bus_location_update", payload["bus"])
+
+    @patch.object(bus_routes.socketio, "emit")
+    @patch.object(bus_routes, "get_route_details", return_value=route_details())
+    def test_route_deviation_requires_three_consecutive_accurate_fixes(
+        self,
+        get_route,
+        emit,
+    ):
+        trip = canonical_trip()
+        trip["routeDeviationConsecutiveCount"] = 2
+        test_config.drivers_collection.find_one.return_value = approved_driver()
+        test_config.trips_collection.find_one.return_value = trip
+        test_config.trips_collection.update_one.return_value = SimpleNamespace(
+            modified_count=1,
+        )
+        test_config.buses_collection.find_one.return_value = {
+            "_id": ObjectId("64b000000000000000000006"),
+            "statusUpdatedAt": NOW,
+        }
+        test_config.buses_collection.update_one.return_value = SimpleNamespace(
+            matched_count=1,
+            upserted_id=None,
+        )
+
+        response = self.client.post(
+            "/api/location",
+            headers=self.headers,
+            json={
+                "lat": 7.0,
+                "lng": 79.8,
+                "speed": 20,
+                "heading": 180,
+                "accuracy": 8,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()["bus"]
+        self.assertTrue(payload["isRouteDeviation"])
+        self.assertEqual(payload["displayLatitude"], payload["rawLatitude"])
+        trip_update = test_config.trips_collection.update_one.call_args.args[1]
+        self.assertEqual(
+            trip_update["$set"]["routeDeviationConsecutiveCount"],
+            3,
+        )
+        emit.assert_called_once_with("bus_location_update", payload)
 
     def test_location_rejects_physically_impossible_movement(self):
         previous_timestamp = datetime.now(timezone.utc) - timedelta(seconds=2)
