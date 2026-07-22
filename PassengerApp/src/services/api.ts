@@ -5,7 +5,11 @@ import type {
   BusOperationalStatus,
   EtaPredictionRequest,
   EtaPredictionResponse,
+  PassengerRouteSearchResponse,
   PassengerSearchResponse,
+  PassengerServiceType,
+  PassengerStopSearchResponse,
+  PassengerTimetableResponse,
   RouteDetails,
   RouteStopsResponse,
   RouteSummary,
@@ -375,4 +379,79 @@ export function predictEta(
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+
+interface PassengerJourneyQuery {
+  fromStopId: string;
+  toStopId: string;
+  date: string;
+  serviceTypes?: PassengerServiceType[];
+}
+
+interface PassengerTimetableQuery extends PassengerJourneyQuery {
+  routeId: string;
+}
+
+function passengerQueryString(
+  entries: Array<[string, string | undefined]>,
+): string {
+  const query = entries
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .map(
+      ([key, value]) =>
+        encodeURIComponent(key) + '=' + encodeURIComponent(value),
+    )
+    .join('&');
+
+  return query ? '?' + query : '';
+}
+
+export function searchPassengerStops(
+  query: string,
+  limit = 10,
+  signal?: AbortSignal,
+): Promise<PassengerStopSearchResponse> {
+  return request<PassengerStopSearchResponse>(
+    '/api/passenger/stops/search' +
+      passengerQueryString([
+        ['q', query.trim()],
+        ['limit', String(limit)],
+      ]),
+    { signal },
+  );
+}
+
+export function searchPassengerRoutes(
+  query: PassengerJourneyQuery,
+  signal?: AbortSignal,
+): Promise<PassengerRouteSearchResponse> {
+  return request<PassengerRouteSearchResponse>(
+    '/api/passenger/routes/search' +
+      passengerQueryString([
+        ['fromStopId', query.fromStopId.trim()],
+        ['toStopId', query.toStopId.trim()],
+        ['date', query.date.trim()],
+        ['serviceTypes', query.serviceTypes?.join(',')],
+      ]),
+    { signal },
+  );
+}
+
+export function getPassengerTimetable(
+  query: PassengerTimetableQuery,
+  signal?: AbortSignal,
+): Promise<PassengerTimetableResponse> {
+  return request<PassengerTimetableResponse>(
+    '/api/passenger/routes/' +
+      encodeURIComponent(query.routeId.trim()) +
+      '/timetable' +
+      passengerQueryString([
+        ['fromStopId', query.fromStopId.trim()],
+        ['toStopId', query.toStopId.trim()],
+        ['date', query.date.trim()],
+        ['serviceTypes', query.serviceTypes?.join(',')],
+      ]),
+    { signal },
+  );
 }

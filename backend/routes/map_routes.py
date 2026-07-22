@@ -353,6 +353,9 @@ def passenger_search_services():
             from_stop_id=str(
                 request.args.get("fromStopId") or ""
             ).strip(),
+            to_stop_id=str(
+                request.args.get("toStopId") or ""
+            ).strip(),
             service_types=str(
                 request.args.get("serviceTypes") or ""
             ).strip(),
@@ -384,6 +387,9 @@ def passenger_route_timetable(route_id: str):
             ).strip(),
             from_stop_id=str(
                 request.args.get("fromStopId") or ""
+            ).strip(),
+            to_stop_id=str(
+                request.args.get("toStopId") or ""
             ).strip(),
             service_types=str(
                 request.args.get("serviceTypes") or ""

@@ -4,8 +4,8 @@
  * Unit tests for live bus state updates, recency calculations, and status classification.
  */
 
-import { getBusStatus, formatLastUpdated, getDistanceKm } from '../src/utils/busStatus';
-import { mergeBusUpdateIntoMap, reconcileBusSnapshot } from '../src/utils/busUpdates';
+import { getBusStatus, getDistanceKm } from '../src/utils/busStatus';
+import { mergeBusUpdateIntoMap } from '../src/utils/busUpdates';
 import type { BusLocation, BusLocationUpdate } from '../src/types';
 
 describe('PassengerApp Bus State Management', () => {

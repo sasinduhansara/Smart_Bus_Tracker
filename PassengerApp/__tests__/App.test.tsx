@@ -100,7 +100,10 @@ beforeEach(async () => {
   removeStatusListener = jest.fn();
   requestAnimationFrameSpy = jest
     .spyOn(globalThis, 'requestAnimationFrame')
-    .mockImplementation(() => 0);
+    .mockImplementation(callback => {
+      callback(0);
+      return 0;
+    });
 
   mockedGetBuses.mockResolvedValue([]);
   mockedGetRoutes.mockResolvedValue({ status: 'success', routes: [] });

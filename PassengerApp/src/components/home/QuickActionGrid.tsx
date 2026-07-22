@@ -38,7 +38,7 @@ function QuickActionGrid({
     {
       id: 'timetables',
       title: 'Timetables',
-      subtitle: 'Check available route information',
+      subtitle: 'Choose stops and see future buses',
       icon: 'calendar',
       accent: 'neutral',
       onPress: () => navigate({ tab: 'routes', routeMode: 'timetables' }),
@@ -54,7 +54,7 @@ function QuickActionGrid({
     {
       id: 'routes',
       title: 'Find a route',
-      subtitle: 'Search by number, stop, or town',
+      subtitle: 'Plan from your start to destination',
       icon: 'route',
       accent: 'neutral',
       onPress: () => navigate({ tab: 'routes', routeMode: 'search' }),

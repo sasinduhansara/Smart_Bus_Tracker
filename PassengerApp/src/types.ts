@@ -150,3 +150,104 @@ export interface NearbyBus {
   etaIsStale?: boolean;
   etaLoading: boolean;
 }
+
+export type PassengerServiceType = 'sltb' | 'private' | 'intercity';
+
+export type PassengerServiceFilter = 'all' | PassengerServiceType;
+
+export interface PassengerPublicStop {
+  id: string;
+  routeStopId?: string | null;
+  name: string;
+  sequence: number;
+  latitude: number | null;
+  longitude: number | null;
+  arrivalOffsetMinutes: number;
+  routeNumbers?: string[];
+  routeCount?: number;
+}
+
+export interface PassengerStopSearchResponse {
+  status: 'success';
+  query: string;
+  stops: PassengerPublicStop[];
+}
+
+export interface PassengerRouteSearchItem {
+  id: string;
+  routeNumber: string;
+  name: string;
+  direction: string;
+  origin: string;
+  destination: string;
+  serviceCategories: string[];
+  availableServiceTypes: PassengerServiceType[];
+  serviceTypeLabels: Partial<Record<PassengerServiceType, string>>;
+  scheduledServiceCountByType: Record<PassengerServiceType, number>;
+  fromStop: PassengerPublicStop;
+  toStop: PassengerPublicStop;
+  selectedStopCount: number;
+  totalStopCount: number;
+  scheduledServiceCount: number;
+  hasScheduledServices: boolean;
+}
+
+export interface PassengerRouteSearchResponse {
+  status: 'success';
+  date: string;
+  fromStopId: string;
+  toStopId: string;
+  serviceTypes: PassengerServiceType[];
+  routes: PassengerRouteSearchItem[];
+}
+
+export interface PassengerTimetableRoute {
+  id: string;
+  routeNumber: string;
+  name: string;
+  direction: string;
+  origin: string;
+  destination: string;
+  serviceCategories: string[];
+}
+
+export interface PassengerTimetableService {
+  serviceId: string;
+  routeId: string;
+  routeNumber: string;
+  serviceType: PassengerServiceType;
+  serviceTypeLabel: string;
+  serviceDate: string;
+  scheduledDeparture: string;
+  departureFromSelectedStop: string | null;
+  arrivalAtDestination: string | null;
+  selectedStopOffsetMinutes: number;
+  destinationStopOffsetMinutes: number;
+  journeyDurationMinutes: number;
+  status: string;
+  tripStatus: string | null;
+  tripId: string | null;
+  liveTrackingAvailable: boolean;
+  trackingState: string;
+  busId: string | null;
+  busRegistration: string | null;
+  driverName: string | null;
+  operatorName: string | null;
+}
+
+export interface PassengerTimetableResponse {
+  status: 'success';
+  date: string;
+  route: PassengerTimetableRoute;
+  selectedStop: PassengerPublicStop;
+  selectedFromStop: PassengerPublicStop;
+  selectedToStop: PassengerPublicStop;
+  journeyDurationMinutes: number;
+  services: PassengerTimetableService[];
+  meta: {
+    count: number;
+    liveCount: number;
+    serviceTypes: PassengerServiceType[];
+    serviceTypeLabels: Record<PassengerServiceType, string>;
+  };
+}

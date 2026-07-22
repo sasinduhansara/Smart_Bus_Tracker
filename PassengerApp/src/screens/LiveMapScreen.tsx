@@ -53,12 +53,6 @@ import {
 } from '../utils/busUpdates';
 import { passengerColors } from '../theme/tokens';
 
-const DEFAULT_REGION = {
-  latitude: 7.4863,
-  longitude: 80.3647,
-  latitudeDelta: 0.5,
-  longitudeDelta: 0.5,
-};
 
 const ETA_REFRESH_MS = 20000;
 const ETA_MOVEMENT_THRESHOLD_KM = 0.05;
@@ -186,7 +180,7 @@ function LiveMapScreen({
   const [selectedStopId, setSelectedStopId] = useState<string | null>(
     initialStopId || null,
   );
-  const [userLocation, setUserLocation] = useState<{latitude: number; longitude: number} | null>(null);
+  const [_userLocation, setUserLocation] = useState<{latitude: number; longitude: number} | null>(null);
   const [socketStatus, setSocketStatus] =
     useState<SocketConnectionStatus>('disconnected');
   const [loading, setLoading] = useState(true);
@@ -507,25 +501,6 @@ function LiveMapScreen({
           getBusDisplayCoordinate(bus) !== null,
       ),
     [filteredBuses, now],
-  );
-
-  const routePolyline = useMemo(
-    () =>
-      (routeDetails?.polyline || [])
-        .map(routePointToLatLng)
-        .filter((point): point is LatLng => point !== null),
-    [routeDetails],
-  );
-
-  const routeStopsWithCoordinates = useMemo(
-    () =>
-      (routeDetails?.stops || []).filter(stop =>
-        isValidMapCoordinate({
-          latitude: stop.latitude,
-          longitude: stop.longitude,
-        }),
-      ),
-    [routeDetails],
   );
 
   const liveBusCount = useMemo(
