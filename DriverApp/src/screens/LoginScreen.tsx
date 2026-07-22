@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,12 +14,18 @@ import { requestLoginOTP } from '../services/api';
 function LoginScreen({ navigation }: any) {
   const [mobile, setMobile] = useState('');
   const [loading, setLoading] = useState(false);
+  const requestInFlightRef = useRef(false);
 
   const requestOtp = async () => {
+    if (requestInFlightRef.current) {
+      return;
+    }
+
     if (mobile.length < 9) {
       Alert.alert('Invalid number', 'Please enter a valid mobile number');
       return;
     }
+    requestInFlightRef.current = true;
     setLoading(true);
     try {
       await requestLoginOTP(mobile);
@@ -27,6 +33,7 @@ function LoginScreen({ navigation }: any) {
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Could not connect to server');
     } finally {
+      requestInFlightRef.current = false;
       setLoading(false);
     }
   };

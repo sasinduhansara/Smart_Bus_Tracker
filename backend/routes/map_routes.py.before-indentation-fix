@@ -328,6 +328,11 @@ def passenger_search_routes():
     })
 
 
+ return jsonify({
+        "status": "success",
+        **result,
+    })
+
 
 @map_bp.route("/api/passenger/services/search", methods=["GET"])
 def passenger_search_services():

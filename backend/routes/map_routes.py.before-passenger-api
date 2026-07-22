@@ -256,14 +256,6 @@ def admin_live_map_buses():
         return jsonify({"error": "Database error"}), 500
 
 
-from services.passenger_schedule_service import (
-    PassengerScheduleError,
-    get_public_timetable,
-    search_public_routes,
-    search_public_stops,
-)
-
-
 # ---------------------------------------------------------------------------
 # Passenger Endpoints (Public)
 # ---------------------------------------------------------------------------
@@ -272,135 +264,31 @@ from services.passenger_schedule_service import (
 
 @map_bp.route("/api/passenger/stops/search", methods=["GET"])
 def passenger_search_stops():
-    query = str(request.args.get("q") or "").strip()
-
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"status": "success", "stops": []})
+        
     try:
-        limit = int(request.args.get("limit", "10"))
-    except (TypeError, ValueError):
-        return jsonify({
-            "status": "error",
-            "error": "limit must be an integer",
-            "stops": [],
-        }), 400
-
-    if not 1 <= limit <= 25:
-        return jsonify({
-            "status": "error",
-            "error": "limit must be between 1 and 25",
-            "stops": [],
-        }), 400
-
-    return jsonify({
-        "status": "success",
-        "query": query,
-        "stops": search_public_stops(query, limit=limit),
-    })
+        # Simple regex search on stop name, limit to 10
+        stops = list(stops_collection.find(
+            {"name": {"$regex": query, "$options": "i"}},
+            {"_id": 0, "location": 1, "name": 1, "stopId": 1, "routeId": 1}
+        ).limit(10))
+        return jsonify({"status": "success", "stops": stops})
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
 
 
 @map_bp.route("/api/passenger/routes/search", methods=["GET"])
 def passenger_search_routes():
-    try:
-        result = search_public_routes(
-            from_stop_id=str(
-                request.args.get("fromStopId") or ""
-            ).strip(),
-            to_stop_id=str(
-                request.args.get("toStopId") or ""
-            ).strip(),
-            service_date=str(
-                request.args.get("date") or ""
-            ).strip(),
-            service_types=str(
-                request.args.get("serviceTypes") or ""
-            ).strip(),
-        )
-    except PassengerScheduleError as error:
-        return jsonify({
-            "status": "error",
-            "error": error.message,
-            "code": error.code,
-            "routes": [],
-        }), error.status
-
-    return jsonify({
-        "status": "success",
-        **result,
-    })
-
+    # Will be implemented in Phase 4
+    return jsonify({"status": "success", "routes": []})
 
 
 @map_bp.route("/api/passenger/services/search", methods=["GET"])
 def passenger_search_services():
-    route_identifier = str(
-        request.args.get("routeId")
-        or request.args.get("routeNumber")
-        or ""
-    ).strip()
-
-    if not route_identifier:
-        return jsonify({
-            "status": "error",
-            "error": "routeId or routeNumber is required",
-            "services": [],
-        }), 400
-
-    try:
-        result = get_public_timetable(
-            route_identifier,
-            service_date=str(
-                request.args.get("date") or ""
-            ).strip(),
-            from_stop_id=str(
-                request.args.get("fromStopId") or ""
-            ).strip(),
-            service_types=str(
-                request.args.get("serviceTypes") or ""
-            ).strip(),
-        )
-    except PassengerScheduleError as error:
-        return jsonify({
-            "status": "error",
-            "error": error.message,
-            "code": error.code,
-            "services": [],
-        }), error.status
-
-    return jsonify({
-        "status": "success",
-        **result,
-    })
-
-
-@map_bp.route(
-    "/api/passenger/routes/<route_id>/timetable",
-    methods=["GET"],
-)
-def passenger_route_timetable(route_id: str):
-    try:
-        result = get_public_timetable(
-            route_id,
-            service_date=str(
-                request.args.get("date") or ""
-            ).strip(),
-            from_stop_id=str(
-                request.args.get("fromStopId") or ""
-            ).strip(),
-            service_types=str(
-                request.args.get("serviceTypes") or ""
-            ).strip(),
-        )
-    except PassengerScheduleError as error:
-        return jsonify({
-            "status": "error",
-            "error": error.message,
-            "code": error.code,
-            "services": [],
-        }), error.status
-
-    return jsonify({
-        "status": "success",
-        **result,
-    })
+    # Will be implemented in Phase 4
+    return jsonify({"status": "success", "services": []})
 
 
 @map_bp.route("/api/passenger/routes/<route_id>", methods=["GET"])

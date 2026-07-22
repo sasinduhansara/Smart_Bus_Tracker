@@ -73,6 +73,10 @@ interface ApiErrorResponse {
 }
 
 const REQUEST_TIMEOUT_MS = 15000;
+// SMS providers can legitimately take longer than a normal API request. The
+// backend waits for that provider before confirming that an OTP was sent, so
+// keep the client alive long enough to receive the authoritative response.
+const OTP_REQUEST_TIMEOUT_MS = 30000;
 const routeRequestCache = new Map<string, Promise<RouteDetailsResponse>>();
 
 let unauthorizedHandler: (() => void | Promise<void>) | null = null;
@@ -140,10 +144,14 @@ function parseResponseBody(
   }
 }
 
-async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<T> {
   const accessToken = await getAccessTokenAsync();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -293,11 +301,19 @@ async function requestForm<T>(
   }
 }
 
-function post<T>(url: string, body: unknown): Promise<T> {
-  return request<T>(url, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+function post<T>(
+  url: string,
+  body: unknown,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  return request<T>(
+    url,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+    timeoutMs,
+  );
 }
 
 function get<T>(url: string): Promise<T> {
@@ -314,7 +330,11 @@ function patch<T>(url: string, body: unknown = {}): Promise<T> {
 export function requestRegisterOTP(
   data: DriverRegistrationPayload,
 ): Promise<OTPResponse> {
-  return post<OTPResponse>('/api/driver/register/request-otp', data);
+  return post<OTPResponse>(
+    '/api/driver/register/request-otp',
+    data,
+    OTP_REQUEST_TIMEOUT_MS,
+  );
 }
 
 export function checkDriverRegistrationAvailability(data: {
@@ -364,9 +384,11 @@ export function verifyRegisterOTP(
 }
 
 export function requestLoginOTP(mobile: string): Promise<OTPResponse> {
-  return post<OTPResponse>('/api/driver/login/request-otp', {
-    mobile,
-  });
+  return post<OTPResponse>(
+    '/api/driver/login/request-otp',
+    { mobile },
+    OTP_REQUEST_TIMEOUT_MS,
+  );
 }
 
 export function verifyLoginOTP(

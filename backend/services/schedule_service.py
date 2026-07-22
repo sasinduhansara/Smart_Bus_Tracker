@@ -1,8 +1,9 @@
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from bson.objectid import ObjectId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from config import buses_collection, drivers_collection
@@ -35,6 +36,9 @@ OPERATING_DAYS = (
 )
 TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SRI_LANKA_TIMEZONE = timezone(timedelta(hours=5, minutes=30))
+DAILY_SERVICE_EARLY_START_MINUTES = 120
+DAILY_SERVICE_LATE_START_MINUTES = 720
 
 
 class ScheduleValidationError(ValueError):
@@ -260,8 +264,13 @@ def serialize_daily_service(document: dict[str, Any]) -> dict[str, Any]:
             document.get("driverNtcRegistrationNumber") or ""
         ),
         "status": str(document.get("status") or "scheduled"),
+        "tripStatus": str(document.get("tripStatus") or ""),
         "notes": str(document.get("notes") or ""),
         "tripId": str(document.get("tripId") or ""),
+        "actualStartedAt": _iso_value(document.get("actualStartedAt")),
+        "actualPausedAt": _iso_value(document.get("actualPausedAt")),
+        "actualResumedAt": _iso_value(document.get("actualResumedAt")),
+        "actualCompletedAt": _iso_value(document.get("actualCompletedAt")),
         "createdAt": _iso_value(document.get("createdAt")),
         "updatedAt": _iso_value(document.get("updatedAt")),
     }
@@ -675,6 +684,245 @@ def _raise_daily_duplicate(error: DuplicateKeyError) -> None:
         status=409,
     ) from error
 
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _scheduled_service_datetime(
+    document: dict[str, Any],
+) -> datetime | None:
+    service_date = str(document.get("serviceDate") or "").strip()
+    departure_time = str(document.get("departureTime") or "").strip()
+
+    if not DATE_PATTERN.fullmatch(service_date):
+        return None
+    if not TIME_PATTERN.fullmatch(departure_time):
+        return None
+
+    try:
+        parsed = datetime.strptime(
+            f"{service_date} {departure_time}",
+            "%Y-%m-%d %H:%M",
+        )
+    except ValueError:
+        return None
+
+    return parsed.replace(tzinfo=SRI_LANKA_TIMEZONE)
+
+
+def _daily_service_matches_trip_assignment(
+    document: dict[str, Any],
+    *,
+    driver_id: str,
+    bus_registration: str,
+    route_number: str,
+) -> bool:
+    document_driver_id = str(document.get("driverId") or "").strip()
+    document_route_number = str(document.get("routeNumber") or "").strip()
+    document_bus_registration = str(
+        document.get("busRegistration")
+        or document.get("vehicleRegistrationNumber")
+        or ""
+    ).strip()
+
+    return (
+        document_driver_id == driver_id
+        and document_route_number == route_number
+        and document_bus_registration.casefold()
+        == bus_registration.casefold()
+    )
+
+
+def link_trip_to_daily_service(
+    *,
+    trip_id: str,
+    driver_id: str,
+    bus_registration: str,
+    route_number: str,
+    started_at: datetime,
+    requested_daily_service_id: str = "",
+) -> dict[str, Any] | None:
+    """Link a newly started driver trip to its assigned daily service.
+
+    An explicit daily-service ID is honoured when it belongs to the same
+    driver, bus and route. Otherwise the nearest scheduled service within the
+    supported early/late start window is selected automatically.
+
+    A trip may still run without a timetable record, so no match returns None
+    rather than preventing live tracking.
+    """
+
+    normalized_trip_id = str(trip_id or "").strip()
+    normalized_driver_id = str(driver_id or "").strip()
+    normalized_bus_registration = str(bus_registration or "").strip()
+    normalized_route_number = str(route_number or "").strip()
+
+    if not all((
+        normalized_trip_id,
+        normalized_driver_id,
+        normalized_bus_registration,
+        normalized_route_number,
+    )):
+        return None
+
+    existing_link = daily_services_collection.find_one({
+        "tripId": normalized_trip_id,
+    })
+    if existing_link:
+        return serialize_daily_service(existing_link)
+
+    started_at_utc = _aware_utc(started_at)
+    started_at_local = started_at_utc.astimezone(SRI_LANKA_TIMEZONE)
+    candidate: dict[str, Any] | None = None
+
+    requested_id = str(requested_daily_service_id or "").strip()
+    if requested_id:
+        requested = _find_document(daily_services_collection, requested_id)
+        if (
+            requested
+            and str(requested.get("status") or "scheduled") == "scheduled"
+            and _daily_service_matches_trip_assignment(
+                requested,
+                driver_id=normalized_driver_id,
+                bus_registration=normalized_bus_registration,
+                route_number=normalized_route_number,
+            )
+        ):
+            candidate = requested
+
+    if candidate is None:
+        candidate_dates = [
+            (started_at_local.date() + timedelta(days=day_offset)).isoformat()
+            for day_offset in (-1, 0, 1)
+        ]
+        records = daily_services_collection.find({
+            "driverId": normalized_driver_id,
+            "routeNumber": normalized_route_number,
+            "serviceDate": {"$in": candidate_dates},
+            "status": "scheduled",
+            "$or": [
+                {"tripId": {"$exists": False}},
+                {"tripId": ""},
+                {"tripId": None},
+            ],
+        })
+
+        ranked_candidates: list[tuple[float, datetime, dict[str, Any]]] = []
+        for record in records:
+            if not _daily_service_matches_trip_assignment(
+                record,
+                driver_id=normalized_driver_id,
+                bus_registration=normalized_bus_registration,
+                route_number=normalized_route_number,
+            ):
+                continue
+
+            scheduled_at = _scheduled_service_datetime(record)
+            if scheduled_at is None:
+                continue
+
+            minutes_after_schedule = (
+                started_at_local - scheduled_at
+            ).total_seconds() / 60
+
+            if not (
+                -DAILY_SERVICE_EARLY_START_MINUTES
+                <= minutes_after_schedule
+                <= DAILY_SERVICE_LATE_START_MINUTES
+            ):
+                continue
+
+            ranked_candidates.append((
+                abs(minutes_after_schedule),
+                scheduled_at,
+                record,
+            ))
+
+        if ranked_candidates:
+            ranked_candidates.sort(key=lambda item: (item[0], item[1]))
+            candidate = ranked_candidates[0][2]
+
+    if candidate is None:
+        return None
+
+    updated = daily_services_collection.find_one_and_update(
+        {
+            "_id": candidate["_id"],
+            "status": "scheduled",
+            "$or": [
+                {"tripId": {"$exists": False}},
+                {"tripId": ""},
+                {"tripId": None},
+            ],
+        },
+        {
+            "$set": {
+                "status": "in_progress",
+                "tripStatus": "active",
+                "tripId": normalized_trip_id,
+                "actualStartedAt": started_at_utc,
+                "updatedAt": started_at_utc,
+                "updatedBy": "driver-trip",
+            },
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if updated is None:
+        updated = daily_services_collection.find_one({
+            "_id": candidate["_id"],
+            "tripId": normalized_trip_id,
+        })
+
+    return serialize_daily_service(updated) if updated else None
+
+
+def sync_daily_service_trip_status(
+    *,
+    trip_id: str,
+    trip_status: str,
+    changed_at: datetime,
+) -> dict[str, Any] | None:
+    """Mirror the driver trip lifecycle onto its linked daily service."""
+
+    normalized_trip_id = str(trip_id or "").strip()
+    normalized_trip_status = str(trip_status or "").strip().lower()
+
+    if not normalized_trip_id:
+        return None
+    if normalized_trip_status not in {"active", "paused", "completed"}:
+        return None
+
+    changed_at_utc = _aware_utc(changed_at)
+    set_fields: dict[str, Any] = {
+        "tripStatus": normalized_trip_status,
+        "updatedAt": changed_at_utc,
+        "updatedBy": "driver-trip",
+    }
+
+    if normalized_trip_status == "completed":
+        set_fields.update({
+            "status": "completed",
+            "actualCompletedAt": changed_at_utc,
+        })
+    else:
+        set_fields["status"] = "in_progress"
+        if normalized_trip_status == "paused":
+            set_fields["actualPausedAt"] = changed_at_utc
+        else:
+            set_fields["actualResumedAt"] = changed_at_utc
+
+    updated = daily_services_collection.find_one_and_update(
+        {"tripId": normalized_trip_id},
+        {"$set": set_fields},
+        return_document=ReturnDocument.AFTER,
+    )
+
+    return serialize_daily_service(updated) if updated else None
 
 def list_daily_services(
     *,

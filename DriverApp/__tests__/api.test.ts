@@ -7,6 +7,7 @@ import {
   checkTripReadiness,
   completeDriverTrip,
   configureUnauthorizedHandler,
+  requestLoginOTP,
   sendDriverLocation,
   startDriverTrip,
 } from '../src/services/api';
@@ -40,6 +41,10 @@ describe('Driver API contracts', () => {
     configureUnauthorizedHandler(null);
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   test('posts the canonical GPS payload without driver or bus identity', async () => {
     fetchMock.mockResolvedValue(
       response(200, {
@@ -63,6 +68,17 @@ describe('Driver API contracts', () => {
     expect(options.headers.Authorization).toBe('Bearer driver-token');
     expect(options.body).not.toContain('driverId');
     expect(options.body).not.toContain('busId');
+  });
+
+  test('allows extra time for the SMS provider when requesting a login OTP', async () => {
+    const timeoutSpy = jest.spyOn(globalThis, 'setTimeout');
+    fetchMock.mockResolvedValue(
+      response(200, { status: 'OTP sent', mobile: '94771234567' }),
+    );
+
+    await requestLoginOTP('0771234567');
+
+    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 30000);
   });
 
   test('starts and completes trips through the authoritative lifecycle paths', async () => {

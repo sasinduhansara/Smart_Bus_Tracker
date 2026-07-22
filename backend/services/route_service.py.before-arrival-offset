@@ -8,7 +8,6 @@ from bson.objectid import ObjectId
 from pymongo.errors import PyMongoError
 
 from config import routes_collection
-from services.routing_service import RoutingServiceError, calculate_osrm_route
 
 try:
     from data.route_data import DEVELOPMENT_ROUTES
@@ -25,8 +24,6 @@ class BusStop(TypedDict, total=False):
     id: str
     name: str
     sequence: int
-    arrivalOffsetMinutes: int
-    travelMinutesFromPreviousStop: int
     latitude: float
     longitude: float
 
@@ -96,7 +93,6 @@ MAX_SEARCH_LIMIT = 25
 MAX_SEARCH_QUERY_LENGTH = 80
 DEFAULT_TERMINAL_RADIUS_METERS = 500.0
 MAX_STOPS_PER_ROUTE = 250
-MAX_ARRIVAL_OFFSET_MINUTES = 1440
 
 
 class RouteValidationError(ValueError):
@@ -177,28 +173,6 @@ def _parse_float(value: Any, minimum: float, maximum: float) -> float | None:
     return None
 
 
-def _parse_int(
-    value: Any,
-    minimum: int,
-    maximum: int,
-) -> int | None:
-    if isinstance(value, bool):
-        return None
-
-    if isinstance(value, float) and not value.is_integer():
-        return None
-
-    try:
-        parsed_value = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-
-    if minimum <= parsed_value <= maximum:
-        return parsed_value
-
-    return None
-
-
 def _normalize_point(value: Any) -> RoutePoint | None:
     if not isinstance(value, dict):
         return None
@@ -251,19 +225,10 @@ def _normalize_stored_stop(value: Any, fallback_sequence: int) -> BusStop | None
         max_length=120,
     ) or _legacy_stop_id(name, sequence)
 
-    arrival_offset = _parse_int(
-        value.get("arrivalOffsetMinutes"),
-        0,
-        MAX_ARRIVAL_OFFSET_MINUTES,
-    )
-    if arrival_offset is None:
-        arrival_offset = max((sequence - 1) * 15, 0)
-
     stop: BusStop = {
         "id": stop_id,
         "name": name,
         "sequence": sequence,
-        "arrivalOffsetMinutes": arrival_offset,
     }
 
     point = _normalize_point(value)
@@ -364,7 +329,6 @@ def _normalize_payload_stops(value: Any) -> list[dict[str, Any]]:
 
     stops: list[dict[str, Any]] = []
     stop_ids: set[str] = set()
-    previous_arrival_offset = -1
 
     for index, raw_stop in enumerate(value, start=1):
         if not isinstance(raw_stop, dict):
@@ -391,50 +355,13 @@ def _normalize_payload_stops(value: Any) -> list[dict[str, Any]]:
                 code="DUPLICATE_STOP_ID",
             )
 
-        raw_arrival_offset = raw_stop.get("arrivalOffsetMinutes")
-
-        if raw_arrival_offset in (None, ""):
-            arrival_offset = (
-                0 if index == 1 else previous_arrival_offset + 15
-            )
-        else:
-            arrival_offset = _parse_int(
-                raw_arrival_offset,
-                0,
-                MAX_ARRIVAL_OFFSET_MINUTES,
-            )
-
-        if arrival_offset is None:
-            raise RouteValidationError(
-                f"Stop {index} arrivalOffsetMinutes must be a whole number between 0 and {MAX_ARRIVAL_OFFSET_MINUTES}",
-                field="stops",
-                code="INVALID_STOP_ARRIVAL_OFFSET",
-            )
-
-        if index == 1 and arrival_offset != 0:
-            raise RouteValidationError(
-                "The first stop arrivalOffsetMinutes must be 0",
-                field="stops",
-                code="INVALID_START_STOP_OFFSET",
-            )
-
-        if index > 1 and arrival_offset <= previous_arrival_offset:
-            raise RouteValidationError(
-                f"Stop {index} arrivalOffsetMinutes must be greater than the previous stop",
-                field="stops",
-                code="NON_INCREASING_STOP_OFFSETS",
-            )
-
         stop_ids.add(stop_id)
         stop: dict[str, Any] = {
             "id": stop_id,
             "name": name,
             "nameKey": name.casefold(),
             "sequence": index,
-            "arrivalOffsetMinutes": arrival_offset,
         }
-
-        previous_arrival_offset = arrival_offset
 
         latitude_supplied = raw_stop.get("latitude") not in (None, "")
         longitude_supplied = raw_stop.get("longitude") not in (None, "")
@@ -603,24 +530,6 @@ def normalize_route_payload(
     raw_stops = payload.get("stops", existing.get("stops"))
     stops = _normalize_payload_stops(raw_stops)
 
-    routing_result: dict[str, Any] | None = None
-    all_stops_have_coordinates = all(
-        "latitude" in stop and "longitude" in stop
-        for stop in stops
-    )
-
-    if all_stops_have_coordinates:
-        try:
-            routing_result = calculate_osrm_route(stops)
-        except RoutingServiceError as error:
-            raise RouteValidationError(
-                f"Could not calculate the road route: {error.message}",
-                field="stops",
-                code=error.code,
-            ) from error
-
-        stops = routing_result["stops"]
-
     terminal_radius = _parse_float(
         payload.get(
             "terminalRadiusMeters",
@@ -647,22 +556,19 @@ def normalize_route_payload(
     if not name:
         name = f"{origin} - {destination}"
 
-    if routing_result is not None:
-        polyline = list(routing_result["polyline"])
-    else:
-        polyline_source = (
-            payload.get("polyline")
-            if "stops" in payload
-            else existing.get("polyline")
-        )
-        polyline = _normalize_payload_polyline(
-            polyline_source,
-            stops,
-        )
+    polyline_source = (
+        payload.get("polyline")
+        if "stops" in payload
+        else existing.get("polyline")
+    )
+    polyline = _normalize_payload_polyline(
+        polyline_source,
+        stops,
+    )
 
     version = int(existing.get("version") or 0) + 1
 
-    result: dict[str, Any] = {
+    return {
         "routeNumber": route_number,
         "routeNumberKey": route_number_key,
         "routeKey": _route_key(route_number, direction),
@@ -681,46 +587,17 @@ def normalize_route_payload(
         "terminalRadiusMeters": terminal_radius,
         "polyline": polyline,
         "stops": stops,
-        "terminals": _build_terminals(
-            stops,
-            terminal_radius,
-            polyline=polyline,
-            origin_name=origin,
-            dest_name=destination,
-        ),
+        "terminals": _build_terminals(stops, terminal_radius),
         "version": version,
     }
 
-    if routing_result is not None:
-        result.update({
-            "geometry": routing_result["geometry"],
-            "geometryVersion": (
-                int(existing.get("geometryVersion") or 0) + 1
-            ),
-            "routingProvider": routing_result["provider"],
-            "routingProfile": routing_result["profile"],
-            "routeDistanceMeters": routing_result[
-                "totalDistanceMeters"
-            ],
-            "routeDurationSeconds": routing_result[
-                "totalDurationSeconds"
-            ],
-            "routeLegs": routing_result["legs"],
-            "routedAt": datetime.now(timezone.utc),
-        })
-    elif "geometry" in payload or "geometry" in existing:
-        result["geometry"] = payload.get(
-            "geometry",
-            existing.get("geometry"),
-        )
-
+    if "geometry" in payload or "geometry" in existing:
+        result["geometry"] = payload.get("geometry", existing.get("geometry"))
         if "geometryVersion" in existing and "geometry" not in payload:
             result["geometryVersion"] = existing["geometryVersion"]
         elif "geometry" in payload:
-            result["geometryVersion"] = (
-                int(existing.get("geometryVersion") or 0) + 1
-            )
-
+            result["geometryVersion"] = int(existing.get("geometryVersion") or 0) + 1
+            
     return result
 
 
@@ -769,34 +646,8 @@ def normalize_route(value: Any) -> RouteDetails | None:
     if not stops:
         return None
 
-    previous_arrival_offset = -1
     for sequence, stop in enumerate(stops, start=1):
         stop["sequence"] = sequence
-
-        arrival_offset = _parse_int(
-            stop.get("arrivalOffsetMinutes"),
-            0,
-            MAX_ARRIVAL_OFFSET_MINUTES,
-        )
-
-        if sequence == 1:
-            arrival_offset = 0
-        elif (
-            arrival_offset is None
-            or arrival_offset <= previous_arrival_offset
-        ):
-            arrival_offset = min(
-                previous_arrival_offset + 15,
-                MAX_ARRIVAL_OFFSET_MINUTES,
-            )
-
-        stop["travelMinutesFromPreviousStop"] = (
-            0
-            if sequence == 1
-            else arrival_offset - previous_arrival_offset
-        )
-        stop["arrivalOffsetMinutes"] = arrival_offset
-        previous_arrival_offset = arrival_offset
 
     polyline = [
         point

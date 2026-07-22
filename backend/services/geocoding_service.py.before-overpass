@@ -1,0 +1,284 @@
+from __future__ import annotations
+
+import json
+import math
+import os
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+
+DEFAULT_PHOTON_BASE_URL = "https://photon.komoot.io"
+DEFAULT_TIMEOUT_SECONDS = 12.0
+
+# Approximate Sri Lanka bounding box:
+# minLon, minLat, maxLon, maxLat
+SRI_LANKA_BBOX = "79.4,5.7,82.1,10.1"
+
+# Geographic centre used only to prefer Sri Lankan results.
+SRI_LANKA_CENTRE_LAT = 7.8731
+SRI_LANKA_CENTRE_LON = 80.7718
+
+
+class GeocodingServiceError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "GEOCODING_ERROR",
+        status: int = 502,
+    ):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.status = status
+
+
+def _timeout_seconds() -> float:
+    raw_value = os.getenv(
+        "PHOTON_TIMEOUT_SECONDS",
+        str(DEFAULT_TIMEOUT_SECONDS),
+    )
+
+    try:
+        timeout = float(raw_value)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SECONDS
+
+    return timeout if 1 <= timeout <= 60 else DEFAULT_TIMEOUT_SECONDS
+
+
+def _clean_text(value: Any, *, max_length: int = 200) -> str:
+    return str(value or "").strip()[:max_length]
+
+
+def _finite_coordinate(
+    value: Any,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float | None:
+    if isinstance(value, bool):
+        return None
+
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(parsed) or not minimum <= parsed <= maximum:
+        return None
+
+    return parsed
+
+
+def _display_address(properties: dict[str, Any]) -> str:
+    values = [
+        properties.get("street"),
+        properties.get("district"),
+        properties.get("city"),
+        properties.get("county"),
+        properties.get("state"),
+        properties.get("postcode"),
+        properties.get("country"),
+    ]
+
+    parts: list[str] = []
+
+    for value in values:
+        cleaned = _clean_text(value)
+
+        if cleaned and cleaned.casefold() not in {
+            item.casefold() for item in parts
+        }:
+            parts.append(cleaned)
+
+    return ", ".join(parts)
+
+
+def _normalize_feature(
+    feature: Any,
+    *,
+    index: int,
+) -> dict[str, Any] | None:
+    if not isinstance(feature, dict):
+        return None
+
+    geometry = feature.get("geometry")
+    properties = feature.get("properties")
+
+    if not isinstance(geometry, dict) or not isinstance(properties, dict):
+        return None
+
+    coordinates = geometry.get("coordinates")
+
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        return None
+
+    longitude = _finite_coordinate(
+        coordinates[0],
+        minimum=-180,
+        maximum=180,
+    )
+    latitude = _finite_coordinate(
+        coordinates[1],
+        minimum=-90,
+        maximum=90,
+    )
+
+    if latitude is None or longitude is None:
+        return None
+
+    name = _clean_text(
+        properties.get("name")
+        or properties.get("city")
+        or properties.get("district")
+        or properties.get("county")
+    )
+
+    if not name:
+        return None
+
+    osm_type = _clean_text(properties.get("osm_type"), max_length=20)
+    osm_id = _clean_text(properties.get("osm_id"), max_length=60)
+
+    result_id = (
+        f"{osm_type}:{osm_id}"
+        if osm_type and osm_id
+        else f"photon:{index}:{latitude:.6f}:{longitude:.6f}"
+    )
+
+    subtitle = _display_address(properties)
+
+    return {
+        "id": result_id,
+        "name": name,
+        "label": name if not subtitle else f"{name}, {subtitle}",
+        "subtitle": subtitle,
+        "latitude": latitude,
+        "longitude": longitude,
+        "country": _clean_text(properties.get("country")),
+        "countryCode": _clean_text(properties.get("countrycode")).upper(),
+        "state": _clean_text(properties.get("state")),
+        "county": _clean_text(properties.get("county")),
+        "city": _clean_text(properties.get("city")),
+        "district": _clean_text(properties.get("district")),
+        "postcode": _clean_text(properties.get("postcode")),
+        "osmKey": _clean_text(properties.get("osm_key")),
+        "osmValue": _clean_text(properties.get("osm_value")),
+    }
+
+
+def search_places(
+    query: str,
+    *,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    normalized_query = _clean_text(query, max_length=120)
+
+    if len(normalized_query) < 2:
+        raise GeocodingServiceError(
+            "Search query must contain at least 2 characters",
+            code="INVALID_GEOCODING_QUERY",
+            status=400,
+        )
+
+    normalized_limit = max(1, min(int(limit), 8))
+
+    base_url = os.getenv(
+        "PHOTON_BASE_URL",
+        DEFAULT_PHOTON_BASE_URL,
+    ).strip().rstrip("/")
+
+    params = urlencode({
+        "q": normalized_query,
+        "limit": normalized_limit,
+        "lang": "en",
+        "countrycode": "LK",
+        "bbox": SRI_LANKA_BBOX,
+        "lat": SRI_LANKA_CENTRE_LAT,
+        "lon": SRI_LANKA_CENTRE_LON,
+        "zoom": 7,
+        "location_bias_scale": 0.3,
+    })
+
+    url = f"{base_url}/api?{params}"
+
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "Gamana-Smart-Bus-Tracker/0.1",
+        },
+        method="GET",
+    )
+
+    try:
+        with urlopen(
+            request,
+            timeout=_timeout_seconds(),
+        ) as response:
+            raw_body = response.read().decode("utf-8")
+    except HTTPError as error:
+        raise GeocodingServiceError(
+            f"Photon returned HTTP {error.code}",
+            code="GEOCODING_PROVIDER_HTTP_ERROR",
+            status=502,
+        ) from error
+    except URLError as error:
+        raise GeocodingServiceError(
+            f"Could not connect to Photon: {error.reason}",
+            code="GEOCODING_PROVIDER_UNAVAILABLE",
+            status=503,
+        ) from error
+    except TimeoutError as error:
+        raise GeocodingServiceError(
+            "Photon request timed out",
+            code="GEOCODING_PROVIDER_TIMEOUT",
+            status=504,
+        ) from error
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as error:
+        raise GeocodingServiceError(
+            "Photon returned invalid JSON",
+            code="INVALID_GEOCODING_RESPONSE",
+            status=502,
+        ) from error
+
+    features = payload.get("features") if isinstance(payload, dict) else None
+
+    if not isinstance(features, list):
+        raise GeocodingServiceError(
+            "Photon returned an invalid response",
+            code="INVALID_GEOCODING_RESPONSE",
+            status=502,
+        )
+
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[str, float, float]] = set()
+
+    for index, feature in enumerate(features):
+        result = _normalize_feature(feature, index=index)
+
+        if result is None:
+            continue
+
+        dedupe_key = (
+            result["name"].casefold(),
+            round(result["latitude"], 5),
+            round(result["longitude"], 5),
+        )
+
+        if dedupe_key in seen:
+            continue
+
+        seen.add(dedupe_key)
+        results.append(result)
+
+        if len(results) >= normalized_limit:
+            break
+
+    return results

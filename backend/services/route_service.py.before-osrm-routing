@@ -8,7 +8,6 @@ from bson.objectid import ObjectId
 from pymongo.errors import PyMongoError
 
 from config import routes_collection
-from services.routing_service import RoutingServiceError, calculate_osrm_route
 
 try:
     from data.route_data import DEVELOPMENT_ROUTES
@@ -26,7 +25,6 @@ class BusStop(TypedDict, total=False):
     name: str
     sequence: int
     arrivalOffsetMinutes: int
-    travelMinutesFromPreviousStop: int
     latitude: float
     longitude: float
 
@@ -603,24 +601,6 @@ def normalize_route_payload(
     raw_stops = payload.get("stops", existing.get("stops"))
     stops = _normalize_payload_stops(raw_stops)
 
-    routing_result: dict[str, Any] | None = None
-    all_stops_have_coordinates = all(
-        "latitude" in stop and "longitude" in stop
-        for stop in stops
-    )
-
-    if all_stops_have_coordinates:
-        try:
-            routing_result = calculate_osrm_route(stops)
-        except RoutingServiceError as error:
-            raise RouteValidationError(
-                f"Could not calculate the road route: {error.message}",
-                field="stops",
-                code=error.code,
-            ) from error
-
-        stops = routing_result["stops"]
-
     terminal_radius = _parse_float(
         payload.get(
             "terminalRadiusMeters",
@@ -647,22 +627,19 @@ def normalize_route_payload(
     if not name:
         name = f"{origin} - {destination}"
 
-    if routing_result is not None:
-        polyline = list(routing_result["polyline"])
-    else:
-        polyline_source = (
-            payload.get("polyline")
-            if "stops" in payload
-            else existing.get("polyline")
-        )
-        polyline = _normalize_payload_polyline(
-            polyline_source,
-            stops,
-        )
+    polyline_source = (
+        payload.get("polyline")
+        if "stops" in payload
+        else existing.get("polyline")
+    )
+    polyline = _normalize_payload_polyline(
+        polyline_source,
+        stops,
+    )
 
     version = int(existing.get("version") or 0) + 1
 
-    result: dict[str, Any] = {
+    return {
         "routeNumber": route_number,
         "routeNumberKey": route_number_key,
         "routeKey": _route_key(route_number, direction),
@@ -681,46 +658,17 @@ def normalize_route_payload(
         "terminalRadiusMeters": terminal_radius,
         "polyline": polyline,
         "stops": stops,
-        "terminals": _build_terminals(
-            stops,
-            terminal_radius,
-            polyline=polyline,
-            origin_name=origin,
-            dest_name=destination,
-        ),
+        "terminals": _build_terminals(stops, terminal_radius),
         "version": version,
     }
 
-    if routing_result is not None:
-        result.update({
-            "geometry": routing_result["geometry"],
-            "geometryVersion": (
-                int(existing.get("geometryVersion") or 0) + 1
-            ),
-            "routingProvider": routing_result["provider"],
-            "routingProfile": routing_result["profile"],
-            "routeDistanceMeters": routing_result[
-                "totalDistanceMeters"
-            ],
-            "routeDurationSeconds": routing_result[
-                "totalDurationSeconds"
-            ],
-            "routeLegs": routing_result["legs"],
-            "routedAt": datetime.now(timezone.utc),
-        })
-    elif "geometry" in payload or "geometry" in existing:
-        result["geometry"] = payload.get(
-            "geometry",
-            existing.get("geometry"),
-        )
-
+    if "geometry" in payload or "geometry" in existing:
+        result["geometry"] = payload.get("geometry", existing.get("geometry"))
         if "geometryVersion" in existing and "geometry" not in payload:
             result["geometryVersion"] = existing["geometryVersion"]
         elif "geometry" in payload:
-            result["geometryVersion"] = (
-                int(existing.get("geometryVersion") or 0) + 1
-            )
-
+            result["geometryVersion"] = int(existing.get("geometryVersion") or 0) + 1
+            
     return result
 
 
@@ -790,11 +738,6 @@ def normalize_route(value: Any) -> RouteDetails | None:
                 MAX_ARRIVAL_OFFSET_MINUTES,
             )
 
-        stop["travelMinutesFromPreviousStop"] = (
-            0
-            if sequence == 1
-            else arrival_offset - previous_arrival_offset
-        )
         stop["arrivalOffsetMinutes"] = arrival_offset
         previous_arrival_offset = arrival_offset
 

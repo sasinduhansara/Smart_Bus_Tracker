@@ -21,11 +21,10 @@ import type { BusLocation, RouteDetails } from '../../types';
 
 // Default to Sri Lanka
 const DEFAULT_CENTER: [number, number] = [80.7718, 7.8731];
-const DEFAULT_ZOOM = 7;
+const DEFAULT_ZOOM = 8;
 
-const MAP_STYLE: string =
-  (process.env.EXPO_PUBLIC_MAP_STYLE_URL as string | undefined) ||
-  'https://demotiles.maplibre.org/style.json';
+const MAP_STYLE =
+  'https://tiles.openfreemap.org/styles/bright';
 
 export interface PassengerMapViewRef {
   flyTo: (longitude: number, latitude: number, zoom?: number) => void;
@@ -86,13 +85,19 @@ export const PassengerMapView = forwardRef<
           mapStyle={MAP_STYLE}
           logo={false}
           attributionPosition={{ bottom: 8, right: 8 }}
+          dragPan={true}
+          touchZoom={true}
+          doubleTapZoom={true}
+          doubleTapHoldZoom={true}
+          touchRotate={false}
+          touchPitch={false}
           onPress={onMapPress ? () => onMapPress() : undefined}
         >
           <Camera
             ref={cameraRef}
             initialViewState={{
-              centerCoordinate: DEFAULT_CENTER,
-              zoomLevel: DEFAULT_ZOOM,
+              center: DEFAULT_CENTER,
+              zoom: DEFAULT_ZOOM,
             }}
             minZoom={5}
             maxZoom={18}

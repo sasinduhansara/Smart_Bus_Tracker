@@ -14,29 +14,6 @@ export interface RouteFilters {
   direction?: RouteDirection | "";
 }
 
-export interface BusLocationSuggestion {
-  id: string;
-  provider: "overpass" | "photon";
-  name: string;
-  label: string;
-  subtitle: string;
-  latitude: number;
-  longitude: number;
-  distanceKm?: number;
-  category?: "bus_station" | "bus_stop";
-}
-
-interface BusLocationSearchResponse {
-  status: string;
-  query: string;
-  results: BusLocationSuggestion[];
-  meta: {
-    count: number;
-    providers: string[];
-    countryCode: string;
-  };
-}
-
 interface RouteListResponse {
   status: string;
   routes: RouteSummary[];
@@ -106,22 +83,3 @@ export function deleteAdminRoute(
     method: "DELETE",
   });
 }
-
-export function searchAdminBusLocations(
-  query: string,
-  signal?: AbortSignal,
-  limit = 8,
-): Promise<BusLocationSearchResponse> {
-  return request(
-    `/admin/geocode/bus-locations${buildQuery({
-      q: query,
-      limit: String(limit),
-      radiusMeters: "5000",
-    })}`,
-    {
-      method: "GET",
-      signal,
-    },
-  );
-}
-

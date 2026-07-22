@@ -32,6 +32,10 @@ from services.driver_trip_service import (
 )
 from services.geospatial_service import match_location_to_route
 from services.route_service import get_route_details
+from services.schedule_service import (
+    link_trip_to_daily_service,
+    sync_daily_service_trip_status,
+)
 from utils.auth_utils import jwt_required, roles_required
 
 
@@ -566,9 +570,10 @@ def start_trip():
         return error_response
 
     now = utc_now()
+    request_data = request.get_json(silent=True) or {}
     readiness, readiness_error = _evaluate_trip_readiness(
         driver,
-        request.get_json(silent=True) or {},
+        request_data,
         now,
     )
     if readiness_error:
@@ -720,12 +725,52 @@ def start_trip():
         trips_collection.delete_one({"_id": result.inserted_id})
         raise
 
+    linked_daily_service = None
+    try:
+        linked_daily_service = link_trip_to_daily_service(
+            trip_id=trip_id,
+            driver_id=driver_id,
+            bus_registration=bus_id,
+            route_number=route_number,
+            started_at=now,
+            requested_daily_service_id=str(
+                request_data.get("dailyServiceId") or ""
+            ).strip(),
+        )
+    except Exception:
+        # Timetable linkage is important for passenger discovery, but a
+        # temporary roster problem must not strand a valid live trip.
+        current_app.logger.exception(
+            "Could not link trip %s to a daily service",
+            trip_id,
+        )
+
+    if linked_daily_service:
+        schedule_fields = {
+            "dailyServiceId": linked_daily_service["id"],
+            "scheduleTemplateId": linked_daily_service[
+                "scheduleTemplateId"
+            ],
+            "serviceDate": linked_daily_service["serviceDate"],
+            "scheduledDepartureTime": linked_daily_service[
+                "departureTime"
+            ],
+            "serviceType": linked_daily_service["serviceType"],
+            "updatedAt": now,
+        }
+        trips_collection.update_one(
+            {"_id": result.inserted_id},
+            {"$set": schedule_fields},
+        )
+        trip.update(schedule_fields)
+
     _emit_bus_update(bus_payload)
 
     return jsonify({
         "status": "started",
         "trip": serialize_trip(trip),
         "bus": bus_payload,
+        "dailyService": linked_daily_service,
     }), 201
 
 
@@ -940,12 +985,28 @@ def _transition_trip(trip_id: str, action: str):
         )
         raise
 
+    linked_daily_service = None
+    try:
+        linked_daily_service = sync_daily_service_trip_status(
+            trip_id=trip_id,
+            trip_status=target_status,
+            changed_at=now,
+        )
+    except Exception:
+        # Bus/trip state remains authoritative. Passenger timetable state will
+        # recover on a later lifecycle transition or administrative repair.
+        current_app.logger.exception(
+            "Could not synchronize daily service for trip %s",
+            trip_id,
+        )
+
     _emit_bus_update(bus_payload)
 
     return jsonify({
         "status": response_status,
         "trip": serialize_trip(updated_trip),
         "bus": bus_payload,
+        "dailyService": linked_daily_service,
     })
 
 

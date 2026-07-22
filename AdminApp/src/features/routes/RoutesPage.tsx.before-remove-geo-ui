@@ -4,13 +4,8 @@ import {
   useMemo,
   useState,
   type ChangeEvent,
-  } from "react";
-import { ArrowRight,
-  Edit3,
-  Plus,
-  Search,
-  Trash2,
-} from "lucide-react";
+} from "react";
+import { ArrowRight, Edit3, Map, Plus, Search, Trash2 } from "lucide-react";
 
 import {
   deleteAdminRoute,
@@ -29,6 +24,7 @@ import type {
 import { getErrorMessage } from "../../utils/errors";
 import { RouteDeleteModal } from "./RouteDeleteModal";
 import { RouteEditorModal } from "./RouteEditorModal";
+import { RouteGeometryEditor } from "./RouteGeometryEditor";
 
 const categoryLabels: Record<string, string> = {
   sltb: "SLTB",
@@ -49,6 +45,7 @@ export function RoutesPage() {
   const [deleteTarget, setDeleteTarget] = useState<RouteSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [geometryEditorOpen, setGeometryEditorOpen] = useState(false);
 
   const loadRoutes = useCallback(async () => {
     setLoading(true);
@@ -121,6 +118,7 @@ export function RoutesPage() {
 
   const handleSaved = (message: string) => {
     setEditorOpen(false);
+    setGeometryEditorOpen(false);
     setEditingRoute(null);
     setSuccess(message);
     void loadRoutes();
@@ -275,6 +273,13 @@ export function RoutesPage() {
                   <strong>{route.depotName || "Not assigned"}</strong>
                   <small>depot name</small>
                 </span>
+                <span>
+                  <strong>
+                    {/* @ts-ignore */}
+                    {route.geometryVersion ? `v${route.geometryVersion}` : "None"}
+                  </strong>
+                  <small>geometry</small>
+                </span>
               </div>
 
               <div className="operations-card-actions">
@@ -286,6 +291,15 @@ export function RoutesPage() {
                 >
                   <Edit3 size={15} />
                   {loadingRouteId === route.id ? "Loading..." : "Edit"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void openGeometryEdit(route)}
+                  disabled={loadingRouteId === route.id}
+                >
+                  <Map size={15} />
+                  Geo
                 </button>
                 <button
                   type="button"
@@ -309,6 +323,17 @@ export function RoutesPage() {
           route={editingRoute}
           onClose={() => {
             setEditorOpen(false);
+            setEditingRoute(null);
+          }}
+          onSaved={handleSaved}
+        />
+      ) : null}
+
+      {geometryEditorOpen && editingRoute ? (
+        <RouteGeometryEditor
+          route={editingRoute}
+          onClose={() => {
+            setGeometryEditorOpen(false);
             setEditingRoute(null);
           }}
           onSaved={handleSaved}

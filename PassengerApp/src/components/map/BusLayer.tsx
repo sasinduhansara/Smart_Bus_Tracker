@@ -96,7 +96,7 @@ export const BusLayer: React.FC<BusLayerProps> = ({
         layout={{
           'text-field': ['get', 'routeNumber'],
           'text-size': ['case', ['==', ['get', 'selected'], 1], 11, 9],
-          'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+          'text-font': ['Noto Sans Bold'],
         }}
         paint={{
           'text-color': '#1e3a5f',

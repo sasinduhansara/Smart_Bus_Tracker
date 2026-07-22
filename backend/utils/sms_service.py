@@ -1,7 +1,12 @@
-import requests
+import logging
 import secrets
 
+import requests
+
 from config import TEXTLK_API_TOKEN, TEXTLK_SENDER_ID
+
+
+logger = logging.getLogger(__name__)
 
 
 def send_sms(mobile, message):
@@ -29,11 +34,30 @@ def send_sms(mobile, message):
         ).strip().lower()
 
         if provider_status in {"error", "failed", "failure"}:
+            logger.warning(
+                "Text.lk rejected an SMS request with provider status %s",
+                provider_status,
+            )
             return {"ok": False}
 
         return {"ok": True}
-    except (requests.RequestException, ValueError):
+    except requests.HTTPError as error:
+        status_code = (
+            error.response.status_code
+            if error.response is not None
+            else "unknown"
+        )
+        logger.warning(
+            "Text.lk SMS request failed with HTTP status %s",
+            status_code,
+        )
+        return {"ok": False}
+    except (requests.RequestException, ValueError) as error:
         # Do not return provider internals or configuration details to clients.
+        logger.warning(
+            "Text.lk SMS request failed (%s)",
+            type(error).__name__,
+        )
         return {"ok": False}
 
 

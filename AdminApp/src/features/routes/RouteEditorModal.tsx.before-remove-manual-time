@@ -1,9 +1,4 @@
-import {
-  useEffect,
-  useState,
-  type ChangeEvent,
-  type FormEvent,
-} from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -14,12 +9,7 @@ import {
   X,
 } from "lucide-react";
 
-import {
-  createAdminRoute,
-  searchAdminBusLocations,
-  updateAdminRoute,
-  type BusLocationSuggestion,
-} from "../../api/routesApi";
+import { createAdminRoute, updateAdminRoute } from "../../api/routesApi";
 import { Notice } from "../../components/common/Notice";
 import type {
   RouteDetails,
@@ -41,6 +31,7 @@ interface EditableStop {
   name: string;
   latitude: string;
   longitude: string;
+  arrivalOffsetMinutes: number;
 }
 
 const categoryOptions: Array<{
@@ -56,21 +47,22 @@ function createStopKey(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function emptyStop(): EditableStop {
+function emptyStop(arrivalOffsetMinutes = 0): EditableStop {
   return {
     key: createStopKey(),
     name: "",
     latitude: "",
     longitude: "",
+    arrivalOffsetMinutes,
   };
 }
 
 function routeStops(route: RouteDetails | null): EditableStop[] {
   if (!route || route.stops.length < 2) {
-    return [emptyStop(), emptyStop()];
+    return [emptyStop(0), emptyStop(30)];
   }
 
-  return route.stops.map((stop) => ({
+  return route.stops.map((stop, index) => ({
     key: stop.id || createStopKey(),
     id: stop.id,
     name: stop.name,
@@ -78,77 +70,9 @@ function routeStops(route: RouteDetails | null): EditableStop[] {
       stop.latitude === undefined ? "" : String(stop.latitude),
     longitude:
       stop.longitude === undefined ? "" : String(stop.longitude),
+    arrivalOffsetMinutes:
+      stop.arrivalOffsetMinutes ?? (index === 0 ? 0 : index * 15),
   }));
-}
-
-
-const BUS_LOCATION_CACHE_PREFIX = "gamana:bus-location:";
-const BUS_LOCATION_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-interface BusLocationCacheEntry {
-  expiresAt: number;
-  results: BusLocationSuggestion[];
-}
-
-function busLocationCacheKey(query: string): string {
-  const normalizedQuery = query
-    .trim()
-    .toLocaleLowerCase("en-US")
-    .replace(/\s+/g, " ");
-
-  return `${BUS_LOCATION_CACHE_PREFIX}${normalizedQuery}`;
-}
-
-function readCachedBusLocations(
-  query: string,
-): BusLocationSuggestion[] | null {
-  try {
-    const cacheKey = busLocationCacheKey(query);
-    const rawValue = window.localStorage.getItem(cacheKey);
-
-    if (!rawValue) {
-      return null;
-    }
-
-    const cached = JSON.parse(rawValue) as BusLocationCacheEntry;
-
-    if (
-      !cached ||
-      !Array.isArray(cached.results) ||
-      typeof cached.expiresAt !== "number"
-    ) {
-      window.localStorage.removeItem(cacheKey);
-      return null;
-    }
-
-    if (Date.now() >= cached.expiresAt) {
-      window.localStorage.removeItem(cacheKey);
-      return null;
-    }
-
-    return cached.results;
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedBusLocations(
-  query: string,
-  results: BusLocationSuggestion[],
-): void {
-  try {
-    const cacheEntry: BusLocationCacheEntry = {
-      expiresAt: Date.now() + BUS_LOCATION_CACHE_TTL_MS,
-      results,
-    };
-
-    window.localStorage.setItem(
-      busLocationCacheKey(query),
-      JSON.stringify(cacheEntry),
-    );
-  } catch {
-    // Autocomplete still works when browser storage is unavailable.
-  }
 }
 
 export function RouteEditorModal({
@@ -175,205 +99,15 @@ export function RouteEditorModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const [activeSearchStopKey, setActiveSearchStopKey] =
-    useState<string | null>(null);
-
-  const [searchingStopKey, setSearchingStopKey] =
-    useState<string | null>(null);
-
-  const [suggestionsByStop, setSuggestionsByStop] = useState<
-    Record<string, BusLocationSuggestion[]>
-  >({});
-
-  const [searchErrorByStop, setSearchErrorByStop] = useState<
-    Record<string, string>
-  >({});
-
-  const [completedQueryByStop, setCompletedQueryByStop] = useState<
-    Record<string, string>
-  >({});
-
   const origin = stops[0]?.name.trim() || "Start stop";
   const destination = stops.at(-1)?.name.trim() || "End stop";
-
-  const activeSearchQuery =
-    activeSearchStopKey === null
-      ? ""
-      : (
-          stops.find((stop) => stop.key === activeSearchStopKey)?.name ?? ""
-        ).trim();
-
-  useEffect(() => {
-    if (
-      activeSearchStopKey === null ||
-      activeSearchQuery.length < 2
-    ) {
-      return undefined;
-    }
-
-    const stopKey = activeSearchStopKey;
-    const query = activeSearchQuery;
-
-    const cachedResults = readCachedBusLocations(query);
-
-    if (cachedResults !== null) {
-      setSuggestionsByStop((current) => ({
-        ...current,
-        [stopKey]: cachedResults,
-      }));
-
-      setCompletedQueryByStop((current) => ({
-        ...current,
-        [stopKey]: query,
-      }));
-
-      setSearchErrorByStop((current) => ({
-        ...current,
-        [stopKey]: "",
-      }));
-
-      setSearchingStopKey((current) =>
-        current === stopKey ? null : current,
-      );
-
-      return undefined;
-    }
-
-    const controller = new AbortController();
-
-    const timer = window.setTimeout(async () => {
-      setSearchingStopKey(stopKey);
-
-      setSearchErrorByStop((current) => ({
-        ...current,
-        [stopKey]: "",
-      }));
-
-      try {
-        const response = await searchAdminBusLocations(
-          query,
-          controller.signal,
-        );
-
-        writeCachedBusLocations(
-          query,
-          response.results,
-        );
-
-        if (controller.signal.aborted) {
-          return;
-        }
-
-        setSuggestionsByStop((current) => ({
-          ...current,
-          [stopKey]: response.results,
-        }));
-
-        setCompletedQueryByStop((current) => ({
-          ...current,
-          [stopKey]: query,
-        }));
-      } catch (searchError) {
-        if (
-          searchError instanceof DOMException &&
-          searchError.name === "AbortError"
-        ) {
-          return;
-        }
-
-        setSuggestionsByStop((current) => ({
-          ...current,
-          [stopKey]: [],
-        }));
-
-        setCompletedQueryByStop((current) => ({
-          ...current,
-          [stopKey]: query,
-        }));
-
-        setSearchErrorByStop((current) => ({
-          ...current,
-          [stopKey]: getErrorMessage(
-            searchError,
-            "Could not search bus locations",
-          ),
-        }));
-      } finally {
-        if (!controller.signal.aborted) {
-          setSearchingStopKey((current) =>
-            current === stopKey ? null : current,
-          );
-        }
-      }
-    }, 80);
-
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [activeSearchQuery, activeSearchStopKey]);
 
   const updateStopName = (key: string, value: string) => {
     setStops((current) =>
       current.map((stop) =>
-        stop.key === key
-          ? {
-              ...stop,
-              name: value,
-              latitude: "",
-              longitude: "",
-            }
-          : stop,
+        stop.key === key ? { ...stop, name: value } : stop,
       ),
     );
-
-    setActiveSearchStopKey(key);
-
-    setSuggestionsByStop((current) => ({
-      ...current,
-      [key]: [],
-    }));
-
-    setCompletedQueryByStop((current) => ({
-      ...current,
-      [key]: "",
-    }));
-
-    setSearchErrorByStop((current) => ({
-      ...current,
-      [key]: "",
-    }));
-  };
-
-  const selectStopLocation = (
-    key: string,
-    suggestion: BusLocationSuggestion,
-  ) => {
-    setStops((current) =>
-      current.map((stop) =>
-        stop.key === key
-          ? {
-              ...stop,
-              name: suggestion.name,
-              latitude: String(suggestion.latitude),
-              longitude: String(suggestion.longitude),
-            }
-          : stop,
-      ),
-    );
-
-    setActiveSearchStopKey(null);
-    setSearchingStopKey(null);
-
-    setSuggestionsByStop((current) => ({
-      ...current,
-      [key]: [],
-    }));
-
-    setSearchErrorByStop((current) => ({
-      ...current,
-      [key]: "",
-    }));
   };
 
   const updateStopCoordinate = (
@@ -393,16 +127,47 @@ export function RouteEditorModal({
     );
   };
 
+  const updateStopOffset = (key: string, value: string) => {
+    const parsed = Number(value);
+
+    setStops((current) =>
+      current.map((stop) =>
+        stop.key === key
+          ? {
+              ...stop,
+              arrivalOffsetMinutes:
+                Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+            }
+          : stop,
+      ),
+    );
+  };
+
   const addStop = () => {
     setStops((current) => {
       if (current.length < 2) {
-        return [...current, emptyStop()];
+        const nextOffset =
+          (current.at(-1)?.arrivalOffsetMinutes ?? 0) + 15;
+
+        return [...current, emptyStop(nextOffset)];
       }
+
+      const previousStop = current[current.length - 2];
+      const endStop = current[current.length - 1];
+      const insertedOffset = previousStop.arrivalOffsetMinutes + 15;
+
+      const adjustedEndStop =
+        endStop.arrivalOffsetMinutes <= insertedOffset
+          ? {
+              ...endStop,
+              arrivalOffsetMinutes: insertedOffset + 15,
+            }
+          : endStop;
 
       return [
         ...current.slice(0, -1),
-        emptyStop(),
-        current[current.length - 1],
+        emptyStop(insertedOffset),
+        adjustedEndStop,
       ];
     });
   };
@@ -489,6 +254,25 @@ export function RouteEditorModal({
         return `${stop.name.trim()} must have a valid longitude.`;
       }
 
+      if (
+        !Number.isInteger(stop.arrivalOffsetMinutes) ||
+        stop.arrivalOffsetMinutes < 0 ||
+        stop.arrivalOffsetMinutes > 1440
+      ) {
+        return `${stop.name.trim()} arrival time must be a whole number between 0 and 1440 minutes.`;
+      }
+
+      if (index === 0 && stop.arrivalOffsetMinutes !== 0) {
+        return "The start stop arrival offset must be 0 minutes.";
+      }
+
+      if (
+        index > 0 &&
+        stop.arrivalOffsetMinutes <=
+          stops[index - 1].arrivalOffsetMinutes
+      ) {
+        return `${stop.name.trim()} must have a later arrival offset than the previous stop.`;
+      }
     }
 
     return "";
@@ -515,6 +299,7 @@ export function RouteEditorModal({
         name: stop.name.trim(),
         latitude: Number(stop.latitude),
         longitude: Number(stop.longitude),
+        arrivalOffsetMinutes: stop.arrivalOffsetMinutes,
       })),
     };
 
@@ -641,8 +426,8 @@ export function RouteEditorModal({
             <div>
               <h3>Ordered stops</h3>
               <p className="muted">
-                Enter each stop name and location. Road distance and travel time
-                are calculated automatically.
+                Enter stop names only. The first is the start stop and the last
+                is the end stop.
               </p>
             </div>
             <button
@@ -676,106 +461,23 @@ export function RouteEditorModal({
                   </div>
 
                   <div className="route-stop-fields">
-                    <div className="route-stop-search">
-                      <label>
-                        {label}
-                        <input
-                          value={stop.name}
-                          onFocus={() =>
-                            setActiveSearchStopKey(stop.key)
-                          }
-                          onBlur={() => {
-                            window.setTimeout(() => {
-                              setActiveSearchStopKey((current) =>
-                                current === stop.key ? null : current,
-                              );
-                            }, 180);
-                          }}
-                          onChange={(
-                            event: ChangeEvent<HTMLInputElement>,
-                          ) =>
-                            updateStopName(
-                              stop.key,
-                              event.target.value,
-                            )
-                          }
-                          placeholder={
-                            isStart
-                              ? "Example: Kurunegala"
-                              : isEnd
-                                ? "Example: Kuliyapitiya"
-                                : "Search bus stop name"
-                          }
-                          maxLength={140}
-                          autoComplete="off"
-                          aria-autocomplete="list"
-                          aria-expanded={
-                            activeSearchStopKey === stop.key
-                          }
-                        />
-                      </label>
-
-                      {activeSearchStopKey === stop.key &&
-                      stop.name.trim().length >= 2 ? (
-                        <div
-                          className="route-stop-suggestions"
-                          role="listbox"
-                          aria-label={`${label} suggestions`}
-                        >
-                          {searchingStopKey === stop.key ? (
-                            <div className="route-stop-search-status">
-                              Searching nearby bus stations…
-                            </div>
-                          ) : null}
-
-                          {searchErrorByStop[stop.key] ? (
-                            <div className="route-stop-search-error">
-                              {searchErrorByStop[stop.key]}
-                            </div>
-                          ) : null}
-
-                          {searchingStopKey !== stop.key &&
-                          !searchErrorByStop[stop.key] &&
-                          completedQueryByStop[stop.key] ===
-                            stop.name.trim() &&
-                          (suggestionsByStop[stop.key] ?? []).length ===
-                            0 ? (
-                            <div className="route-stop-search-status">
-                              No nearby bus location found. You can enter
-                              coordinates manually.
-                            </div>
-                          ) : null}
-
-                          {(suggestionsByStop[stop.key] ?? []).map(
-                            (suggestion) => (
-                              <button
-                                key={suggestion.id}
-                                type="button"
-                                className="route-stop-suggestion"
-                                role="option"
-                                onMouseDown={(event) =>
-                                  event.preventDefault()
-                                }
-                                onClick={() =>
-                                  selectStopLocation(
-                                    stop.key,
-                                    suggestion,
-                                  )
-                                }
-                              >
-                                <span className="route-stop-suggestion-name">
-                                  {suggestion.name}
-                                </span>
-
-                                <span className="route-stop-suggestion-detail">
-                                  {suggestion.subtitle}
-                                </span>
-                              </button>
-                            ),
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
+                    <label>
+                      {label}
+                      <input
+                        value={stop.name}
+                        onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                          updateStopName(stop.key, event.target.value)
+                        }
+                        placeholder={
+                          isStart
+                            ? "Starting bus stand"
+                            : isEnd
+                              ? "Destination bus stand"
+                              : "Bus stop name"
+                        }
+                        maxLength={140}
+                      />
+                    </label>
 
                     <label>
                       Latitude
@@ -812,6 +514,22 @@ export function RouteEditorModal({
                           )
                         }
                         placeholder="Example: 80.3623"
+                      />
+                    </label>
+
+                    <label>
+                      Minutes from route start
+                      <input
+                        type="number"
+                        min={0}
+                        max={1440}
+                        step={1}
+                        value={stop.arrivalOffsetMinutes}
+                        onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                          updateStopOffset(stop.key, event.target.value)
+                        }
+                        disabled={isStart}
+                        aria-label={`${label} arrival offset in minutes`}
                       />
                     </label>
                   </div>

@@ -23,17 +23,33 @@ export function isValidMapCoordinate(
 export function getBusDisplayCoordinate(
   bus: BusLocation,
 ): BusDisplayCoordinate | null {
-  const latitude = bus.displayLatitude;
-  const longitude = bus.displayLongitude;
+  /*
+   * Live socket updates always update lat/lng.
+   *
+   * displayLatitude/displayLongitude may come from an older REST snapshot
+   * and can remain unchanged when a new socket location arrives.
+   *
+   * Therefore, current live lat/lng must be used first so the bus marker
+   * moves immediately on the passenger map.
+   */
+  const liveCoordinate = {
+    latitude: bus.lat,
+    longitude: bus.lng,
+  };
 
-  const displayCoordinate = { latitude, longitude };
-
-  if (isValidMapCoordinate(displayCoordinate)) {
-    return displayCoordinate;
+  if (isValidMapCoordinate(liveCoordinate)) {
+    return liveCoordinate;
   }
 
-  const rawCoordinate = { latitude: bus.lat, longitude: bus.lng };
-  return isValidMapCoordinate(rawCoordinate) ? rawCoordinate : null;
+  /*
+   * Fallback for old records that contain only display coordinates.
+   */
+  const displayCoordinate = {
+    latitude: bus.displayLatitude,
+    longitude: bus.displayLongitude,
+  };
+
+  return isValidMapCoordinate(displayCoordinate) ? displayCoordinate : null;
 }
 
 export function formatBusDirection(direction?: string): string {

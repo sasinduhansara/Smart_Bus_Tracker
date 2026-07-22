@@ -81,76 +81,6 @@ function routeStops(route: RouteDetails | null): EditableStop[] {
   }));
 }
 
-
-const BUS_LOCATION_CACHE_PREFIX = "gamana:bus-location:";
-const BUS_LOCATION_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-interface BusLocationCacheEntry {
-  expiresAt: number;
-  results: BusLocationSuggestion[];
-}
-
-function busLocationCacheKey(query: string): string {
-  const normalizedQuery = query
-    .trim()
-    .toLocaleLowerCase("en-US")
-    .replace(/\s+/g, " ");
-
-  return `${BUS_LOCATION_CACHE_PREFIX}${normalizedQuery}`;
-}
-
-function readCachedBusLocations(
-  query: string,
-): BusLocationSuggestion[] | null {
-  try {
-    const cacheKey = busLocationCacheKey(query);
-    const rawValue = window.localStorage.getItem(cacheKey);
-
-    if (!rawValue) {
-      return null;
-    }
-
-    const cached = JSON.parse(rawValue) as BusLocationCacheEntry;
-
-    if (
-      !cached ||
-      !Array.isArray(cached.results) ||
-      typeof cached.expiresAt !== "number"
-    ) {
-      window.localStorage.removeItem(cacheKey);
-      return null;
-    }
-
-    if (Date.now() >= cached.expiresAt) {
-      window.localStorage.removeItem(cacheKey);
-      return null;
-    }
-
-    return cached.results;
-  } catch {
-    return null;
-  }
-}
-
-function writeCachedBusLocations(
-  query: string,
-  results: BusLocationSuggestion[],
-): void {
-  try {
-    const cacheEntry: BusLocationCacheEntry = {
-      expiresAt: Date.now() + BUS_LOCATION_CACHE_TTL_MS,
-      results,
-    };
-
-    window.localStorage.setItem(
-      busLocationCacheKey(query),
-      JSON.stringify(cacheEntry),
-    );
-  } catch {
-    // Autocomplete still works when browser storage is unavailable.
-  }
-}
-
 export function RouteEditorModal({
   route,
   onClose,
@@ -213,32 +143,6 @@ export function RouteEditorModal({
 
     const stopKey = activeSearchStopKey;
     const query = activeSearchQuery;
-
-    const cachedResults = readCachedBusLocations(query);
-
-    if (cachedResults !== null) {
-      setSuggestionsByStop((current) => ({
-        ...current,
-        [stopKey]: cachedResults,
-      }));
-
-      setCompletedQueryByStop((current) => ({
-        ...current,
-        [stopKey]: query,
-      }));
-
-      setSearchErrorByStop((current) => ({
-        ...current,
-        [stopKey]: "",
-      }));
-
-      setSearchingStopKey((current) =>
-        current === stopKey ? null : current,
-      );
-
-      return undefined;
-    }
-
     const controller = new AbortController();
 
     const timer = window.setTimeout(async () => {
@@ -253,11 +157,6 @@ export function RouteEditorModal({
         const response = await searchAdminBusLocations(
           query,
           controller.signal,
-        );
-
-        writeCachedBusLocations(
-          query,
-          response.results,
         );
 
         if (controller.signal.aborted) {
@@ -305,7 +204,7 @@ export function RouteEditorModal({
           );
         }
       }
-    }, 80);
+    }, 500);
 
     return () => {
       window.clearTimeout(timer);
