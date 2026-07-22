@@ -35,10 +35,18 @@ type VerificationStatus =
   | 'rejected'
   | 'unverified'
   | 'under_review'
+  | 'correction_required'
   | 'unknown';
 
+type ExtendedDriverStatusResponse = DriverStatusResponse & {
+  correctionFields?: RegistrationDocumentKey[];
+  correctionMessage?: string;
+};
+
 function normalizeStatus(value?: string): VerificationStatus {
-  const status = String(value || '').trim().toLowerCase();
+  const status = String(value || '')
+    .trim()
+    .toLowerCase();
 
   switch (status) {
     case 'approved':
@@ -48,6 +56,7 @@ function normalizeStatus(value?: string): VerificationStatus {
     case 'rejected':
     case 'unverified':
     case 'under_review':
+    case 'correction_required':
       return status;
     default:
       return 'unknown';
@@ -68,14 +77,17 @@ function PendingApprovalScreen({
 
   const [documents, setDocuments] = useState<DocumentInfo[]>([]);
   const [checkingStatus, setCheckingStatus] = useState(false);
-  const [currentStatus, setCurrentStatus] =
-    useState<VerificationStatus>(() =>
-      normalizeStatus(driver?.verificationStatus),
-    );
+  const [currentStatus, setCurrentStatus] = useState<VerificationStatus>(() =>
+    normalizeStatus(driver?.verificationStatus),
+  );
   const [lastCheckedAt, setLastCheckedAt] = useState<Date | null>(null);
   const [statusMessage, setStatusMessage] = useState(
     'Waiting for administrator approval.',
   );
+  const [correctionFields, setCorrectionFields] = useState<
+    RegistrationDocumentKey[]
+  >([]);
+  const [correctionMessage, setCorrectionMessage] = useState('');
 
   const isCheckingRef = useRef(false);
   const mountedRef = useRef(true);
@@ -93,7 +105,7 @@ function PendingApprovalScreen({
   }, [logout, navigation]);
 
   const handleStatusResult = useCallback(
-    (response: DriverStatusResponse) => {
+    (response: ExtendedDriverStatusResponse) => {
       const normalizedStatus = normalizeStatus(
         response.verificationStatus ?? response.status,
       );
@@ -102,6 +114,12 @@ function PendingApprovalScreen({
 
       setCurrentStatus(normalizedStatus);
       setLastCheckedAt(new Date());
+      setCorrectionFields(
+        Array.isArray(response.correctionFields)
+          ? response.correctionFields
+          : [],
+      );
+      setCorrectionMessage(String(response.correctionMessage || '').trim());
 
       switch (normalizedStatus) {
         case 'approved':
@@ -141,8 +159,23 @@ function PendingApprovalScreen({
 
         case 'pending':
         case 'unverified':
+          setStatusMessage(
+            'Your application is waiting to be opened by an administrator.',
+          );
+          return;
+
         case 'under_review':
-          setStatusMessage('Your account is still under verification.');
+          setStatusMessage(
+            'An administrator is currently reviewing your identity and licence documents.',
+          );
+          return;
+
+        case 'correction_required':
+          setStatusMessage(
+            response.correctionMessage?.trim()
+              ? response.correctionMessage.trim()
+              : 'One or more identity documents must be replaced before review can continue.',
+          );
           return;
 
         case 'blocked':
@@ -169,8 +202,8 @@ function PendingApprovalScreen({
         case 'rejected':
           setStatusMessage(
             response.rejectionReason?.trim()
-              ? `Correction requested: ${response.rejectionReason.trim()}`
-              : 'Corrections are required. Replace the requested documents or contact operations.',
+              ? response.rejectionReason.trim()
+              : 'Your driver application was rejected. Contact operations for further information.',
           );
           return;
 
@@ -196,7 +229,9 @@ function PendingApprovalScreen({
       }
 
       try {
-        const response = await getDriverStatus(driverId);
+        const response = (await getDriverStatus(
+          driverId,
+        )) as ExtendedDriverStatusResponse;
 
         if (mountedRef.current) {
           handleStatusResult(response);
@@ -233,8 +268,9 @@ function PendingApprovalScreen({
           }
 
           const uploadedDocuments = Object.entries(profile.documents)
-            .filter((entry): entry is [RegistrationDocumentKey, { url: string }] =>
-              Boolean(entry[1]?.url),
+            .filter(
+              (entry): entry is [RegistrationDocumentKey, { url: string }] =>
+                Boolean(entry[1]?.url),
             )
             .map(([docType, document]) => ({
               docType,
@@ -280,6 +316,8 @@ function PendingApprovalScreen({
         },
       ];
     });
+
+    void checkApprovalStatus(true);
   };
 
   const getStatusLabel = (): string => {
@@ -296,6 +334,9 @@ function PendingApprovalScreen({
 
       case 'under_review':
         return 'Under Review';
+
+      case 'correction_required':
+        return 'Correction Required';
 
       case 'unverified':
         return 'Unverified';
@@ -318,6 +359,9 @@ function PendingApprovalScreen({
       case 'rejected':
         return styles.rejected;
 
+      case 'correction_required':
+        return styles.correctionRequired;
+
       default:
         return styles.pending;
     }
@@ -338,8 +382,10 @@ function PendingApprovalScreen({
         </View>
 
         <Text style={styles.title}>
-          {currentStatus === 'rejected'
-            ? 'Correction Required'
+          {currentStatus === 'correction_required'
+            ? 'Document Correction Required'
+            : currentStatus === 'rejected'
+            ? 'Application Rejected'
             : currentStatus === 'blocked'
             ? 'Account Blocked'
             : 'Registration Review'}
@@ -350,8 +396,10 @@ function PendingApprovalScreen({
         </Text>
 
         <Text style={styles.message}>
-          {currentStatus === 'rejected'
-            ? 'Review the operations message below and replace any requested identity documents.'
+          {currentStatus === 'correction_required'
+            ? 'Review the requested corrections below and replace only the affected documents.'
+            : currentStatus === 'rejected'
+            ? 'This application is closed. Contact operations if you need more information.'
             : currentStatus === 'blocked'
             ? 'Driver operations and GPS tracking are disabled for this account.'
             : 'GPS tracking and live trip controls become available after administrator approval.'}
@@ -361,7 +409,9 @@ function PendingApprovalScreen({
       <View style={styles.contentCard}>
         <View style={styles.infoBox}>
           <Text style={styles.infoLabel}>Mobile Number</Text>
-          <Text style={styles.infoValue}>{driver?.mobile || 'Not available'}</Text>
+          <Text style={styles.infoValue}>
+            {driver?.mobile || 'Not available'}
+          </Text>
 
           <Text style={styles.infoLabel}>Verification Status</Text>
 
@@ -378,6 +428,31 @@ function PendingApprovalScreen({
           )}
         </View>
 
+        {currentStatus === 'correction_required' ? (
+          <View style={styles.correctionBox}>
+            <Text style={styles.correctionTitle}>Documents to replace</Text>
+
+            {correctionFields.length ? (
+              correctionFields.map(field => (
+                <Text key={field} style={styles.correctionField}>
+                  {field
+                    .replace(/([A-Z])/g, ' $1')
+                    .replace(/^./, character => character.toUpperCase())}
+                </Text>
+              ))
+            ) : (
+              <Text style={styles.correctionText}>
+                Review the administrator message and replace the affected
+                document.
+              </Text>
+            )}
+
+            {correctionMessage ? (
+              <Text style={styles.correctionText}>{correctionMessage}</Text>
+            ) : null}
+          </View>
+        ) : null}
+
         <TouchableOpacity
           style={[styles.checkButton, checkingStatus && styles.buttonDisabled]}
           onPress={() => checkApprovalStatus(false)}
@@ -391,7 +466,13 @@ function PendingApprovalScreen({
           )}
         </TouchableOpacity>
 
-        {driverId && currentStatus !== 'blocked' ? (
+        {driverId &&
+        [
+          'pending',
+          'unverified',
+          'under_review',
+          'correction_required',
+        ].includes(currentStatus) ? (
           <DocumentUploader
             driverId={driverId}
             documents={documents}
@@ -498,6 +579,36 @@ const styles = StyleSheet.create({
   },
   rejected: {
     color: '#dc3545',
+  },
+  correctionRequired: {
+    color: '#B45309',
+  },
+  correctionBox: {
+    width: '100%',
+    backgroundColor: '#FFF7ED',
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 18,
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+  },
+  correctionTitle: {
+    color: '#9A3412',
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  correctionField: {
+    color: '#7C2D12',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  correctionText: {
+    color: '#9A3412',
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
   },
   statusMessage: {
     marginTop: 12,

@@ -31,6 +31,15 @@ from utils.auth_utils import (
     roles_required,
     subject_matches_route_param,
 )
+from services.driver_bus_request_service import (
+    DriverBusRequestError,
+    get_driver_onboarding_status,
+)
+from services.notification_service import (
+    DRIVER_NOTIFICATION_LIMIT,
+    driver_notification_query,
+    prune_driver_notifications,
+)
 
 auth_bp = Blueprint("auth_bp", __name__)
 
@@ -531,12 +540,7 @@ def sanitize_registration_documents(documents, mobile):
     if not isinstance(documents, dict):
         return None, "documents must be an object"
 
-    provided_documents = {
-        document_type: documents.get(document_type)
-        for document_type in REQUIRED_DOCUMENT_TYPES
-        if documents.get(document_type) is not None
-    }
-    if not provided_documents:
+    if not documents:
         return {}, None
 
     try:
@@ -555,7 +559,10 @@ def sanitize_registration_documents(documents, mobile):
     }
     sanitized = {}
 
-    for document_type, document in provided_documents.items():
+    for document_type in REQUIRED_DOCUMENT_TYPES:
+        document = documents.get(document_type)
+        if document is None:
+            continue
         if not isinstance(document, dict):
             return None, f"{document_type} document reference is invalid"
 
@@ -672,6 +679,7 @@ def serialize_driver(driver):
         "rejected",
         "unverified",
         "under_review",
+        "correction_required",
     }:
         verification_status = "pending"
 
@@ -693,6 +701,16 @@ def serialize_driver(driver):
         "verificationStatus": verification_status,
         "kycStatus": driver.get("kycStatus", "NOT_SUBMITTED"),
         "documents": driver.get("documents", {}),
+        "kycRevision": driver.get("kycRevision", 0),
+        "correctionFields": driver.get("correctionFields", []),
+        "correctionMessage": driver.get("correctionMessage", ""),
+        "rejectionReason": driver.get("rejectionReason", ""),
+        "blockReason": driver.get("blockReason", ""),
+        "reviewedAt": to_iso(driver.get("reviewedAt")),
+        "approvedAt": to_iso(driver.get("approvedAt")),
+        "correctionRequestedAt": to_iso(
+            driver.get("correctionRequestedAt")
+        ),
         "createdAt": created_at,
     }
 
@@ -870,9 +888,10 @@ def build_driver_home_payload(driver):
         elif duration_minutes is not None:
             total_active_seconds += int(duration_minutes or 0) * 60
 
+    prune_driver_notifications(driver_id)
     unread_notifications = notifications_collection.count_documents(
         {
-            **driver_related_query(driver_id),
+            **driver_notification_query(driver_id),
             "read": {"$ne": True},
         }
     )
@@ -1369,6 +1388,13 @@ def driver_login_verify_otp():
             "expiresInSeconds": DRIVER_ACCESS_TOKEN_SECONDS,
         })
 
+        try:
+            response["onboarding"] = get_driver_onboarding_status(
+                driver_id
+            )
+        except DriverBusRequestError:
+            response["onboarding"] = None
+
     return jsonify(response)
 
 
@@ -1410,6 +1436,25 @@ def get_driver_home(driver_id):
             "verificationStatus": verification_status,
         }), 403
 
+    try:
+        onboarding = get_driver_onboarding_status(driver_id)
+    except DriverBusRequestError as error:
+        return jsonify({
+            "error": error.message,
+            "code": error.code,
+            "field": error.field,
+        }), error.status
+
+    if onboarding.get("nextStep") != "READY_FOR_HOME":
+        return jsonify({
+            "error": (
+                "Complete bus registration and admin approval "
+                "before accessing the driver home"
+            ),
+            "code": "DRIVER_BUS_ONBOARDING_REQUIRED",
+            "onboarding": onboarding,
+        }), 409
+
     return jsonify(
         build_driver_home_payload(driver)
     )
@@ -1432,20 +1477,27 @@ def get_driver_notifications():
     ):
         return jsonify({"error": "Driver not found"}), 404
 
-    raw_limit = request.args.get("limit", "50")
+    raw_limit = request.args.get(
+        "limit",
+        str(DRIVER_NOTIFICATION_LIMIT),
+    )
     try:
         limit = int(raw_limit)
     except (TypeError, ValueError):
         limit = 0
 
-    if not 1 <= limit <= 100:
+    if not 1 <= limit <= DRIVER_NOTIFICATION_LIMIT:
         return jsonify({
-            "error": "limit must be an integer between 1 and 100",
+            "error": (
+                "limit must be an integer between 1 and "
+                f"{DRIVER_NOTIFICATION_LIMIT}"
+            ),
         }), 400
 
+    prune_driver_notifications(driver_id)
     notifications = list(
         notifications_collection.find(
-            driver_related_query(driver_id),
+            driver_notification_query(driver_id),
             {
                 "title": 1,
                 "message": 1,
@@ -1465,6 +1517,72 @@ def get_driver_notifications():
             serialize_notification(notification)
             for notification in notifications
         ],
+    })
+
+
+@auth_bp.route(
+    "/api/driver/notifications/<notification_id>/read",
+    methods=["PATCH"],
+)
+@jwt_required
+@roles_required("driver")
+def mark_driver_notification_read(notification_id):
+    driver_id = str(getattr(g, "auth", {}).get("sub", ""))
+    if not ObjectId.is_valid(driver_id):
+        return jsonify({"error": "Invalid authenticated driver"}), 401
+    if not ObjectId.is_valid(notification_id):
+        return jsonify({"error": "Invalid notification id"}), 400
+
+    now = datetime.now(timezone.utc)
+    notification = notifications_collection.find_one_and_update(
+        {
+            "_id": ObjectId(notification_id),
+            **driver_notification_query(driver_id),
+        },
+        {
+            "$set": {
+                "read": True,
+                "readAt": now,
+            },
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if not notification:
+        return jsonify({"error": "Notification not found"}), 404
+
+    return jsonify({
+        "status": "read",
+        "notification": serialize_notification(notification),
+    })
+
+
+@auth_bp.route(
+    "/api/driver/notifications/read-all",
+    methods=["PATCH"],
+)
+@jwt_required
+@roles_required("driver")
+def mark_all_driver_notifications_read():
+    driver_id = str(getattr(g, "auth", {}).get("sub", ""))
+    if not ObjectId.is_valid(driver_id):
+        return jsonify({"error": "Invalid authenticated driver"}), 401
+
+    now = datetime.now(timezone.utc)
+    result = notifications_collection.update_many(
+        {
+            **driver_notification_query(driver_id),
+            "read": {"$ne": True},
+        },
+        {
+            "$set": {
+                "read": True,
+                "readAt": now,
+            },
+        },
+    )
+    return jsonify({
+        "status": "read",
+        "updatedCount": result.modified_count,
     })
 
 
@@ -1528,6 +1646,7 @@ def get_driver_status(driver_id):
         "rejected",
         "unverified",
         "under_review",
+        "correction_required",
     }
 
     if verification_status not in allowed_statuses:
@@ -1549,4 +1668,10 @@ def get_driver_status(driver_id):
         ),
         "rejectionReason": driver.get("rejectionReason", ""),
         "blockReason": driver.get("blockReason", ""),
+        "correctionFields": driver.get("correctionFields", []),
+        "correctionMessage": driver.get("correctionMessage", ""),
+        "reviewedAt": to_iso(driver.get("reviewedAt")),
+        "correctionRequestedAt": to_iso(
+            driver.get("correctionRequestedAt")
+        ),
     })

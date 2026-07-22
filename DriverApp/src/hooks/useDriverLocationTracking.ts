@@ -12,6 +12,11 @@ import {
   type DriverLocationResponse,
 } from '../services/api';
 import {
+  isBackgroundLocationTrackingSupported,
+  startBackgroundLocationTracking,
+  stopBackgroundLocationTracking,
+} from '../services/backgroundLocationService';
+import {
   clearTripLocationQueue,
   enqueueTripLocation,
   getNewestFreshTripLocation,
@@ -336,6 +341,7 @@ export function useDriverLocationTracking(
   const lastSentSnapshotRef = useRef<DriverLocationSnapshot | null>(null);
   const lastSuccessfulSendRef = useRef(0);
   const activeTripIdRef = useRef<string | null>(null);
+  const backgroundTrackingActiveRef = useRef(false);
 
   const [isTracking, setIsTracking] = useState(false);
   const [isReadinessActive, setIsReadinessActive] = useState(false);
@@ -349,6 +355,7 @@ export function useDriverLocationTracking(
   const [lastSentAt, setLastSentAt] = useState<Date | null>(null);
   const [lastLocation, setLastLocation] =
     useState<DriverLocationSnapshot | null>(null);
+  const [snappedLocation, setSnappedLocation] = useState<TripLocation | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const clearRetry = useCallback(() => {
@@ -379,6 +386,52 @@ export function useDriverLocationTracking(
       clearInterval(readinessTimerRef.current);
       readinessTimerRef.current = null;
     }
+  }, []);
+
+  const ensureBackgroundTracking = useCallback(async (): Promise<boolean> => {
+    if (!isBackgroundLocationTrackingSupported()) {
+      return true;
+    }
+
+    if (backgroundTrackingActiveRef.current) {
+      return true;
+    }
+
+    try {
+      const started = await startBackgroundLocationTracking(
+        activeTripIdRef.current || undefined,
+      );
+
+      backgroundTrackingActiveRef.current = started;
+      return started;
+    } catch (backgroundError) {
+      if (mountedRef.current) {
+        setError(
+          errorMessage(
+            backgroundError,
+            'Background live tracking could not start.',
+          ),
+        );
+        setTransmissionStatus('offline');
+      }
+
+      return false;
+    }
+  }, []);
+
+  const stopNativeBackgroundTracking = useCallback(() => {
+    backgroundTrackingActiveRef.current = false;
+
+    stopBackgroundLocationTracking().catch(stopError => {
+      if (mountedRef.current) {
+        setError(
+          errorMessage(
+            stopError,
+            'Background live tracking could not stop cleanly.',
+          ),
+        );
+      }
+    });
   }, []);
 
   const sendSnapshot = useCallback(
@@ -465,6 +518,16 @@ export function useDriverLocationTracking(
           setLastSentAt(sentAt);
           setError(null);
           setTransmissionStatus('online');
+          if (response.bus && response.bus.lat && response.bus.lng) {
+            setSnappedLocation({
+              lat: response.bus.lat,
+              lng: response.bus.lng,
+              timestamp: snapshot.recordedAt,
+              speed: snapshot.speedKmh,
+              heading: snapshot.heading,
+              accuracy: snapshot.accuracy,
+            });
+          }
         }
 
         onLocationSentRef.current?.(response, snapshot);
@@ -517,6 +580,7 @@ export function useDriverLocationTracking(
           clearRetry();
           clearQueuedSend();
           clearHeartbeat();
+          stopNativeBackgroundTracking();
 
           if (watchIdRef.current !== null) {
             geolocationService.clearWatch(watchIdRef.current);
@@ -579,7 +643,12 @@ export function useDriverLocationTracking(
         }
       }
     },
-    [clearHeartbeat, clearQueuedSend, clearRetry],
+    [
+      clearHeartbeat,
+      clearQueuedSend,
+      clearRetry,
+      stopNativeBackgroundTracking,
+    ],
   );
 
   const acceptPosition = useCallback(
@@ -853,6 +922,12 @@ export function useDriverLocationTracking(
 
       if (watchIdRef.current !== null) {
         desiredTrackingRef.current = true;
+
+        if (!(await ensureBackgroundTracking())) {
+          desiredTrackingRef.current = false;
+          return false;
+        }
+
         if (lastSuccessfulSendRef.current > 0) {
           return true;
         }
@@ -905,6 +980,10 @@ export function useDriverLocationTracking(
         if (mountedRef.current) {
           setError('The GPS native module is unavailable.');
         }
+        return false;
+      }
+
+      if (!(await ensureBackgroundTracking())) {
         return false;
       }
 
@@ -978,6 +1057,7 @@ export function useDriverLocationTracking(
           clearRetry();
           clearQueuedSend();
           clearHeartbeat();
+          stopNativeBackgroundTracking();
           pendingSnapshotRef.current = null;
           lastSuccessfulSendRef.current = 0;
           lastSentSnapshotRef.current = null;
@@ -1006,6 +1086,7 @@ export function useDriverLocationTracking(
       } catch (startError) {
         desiredTrackingRef.current = false;
         modeRef.current = 'idle';
+        stopNativeBackgroundTracking();
         if (backendAcceptedAt) {
           lastSuccessfulSendRef.current = 0;
           lastSentSnapshotRef.current = null;
@@ -1026,9 +1107,11 @@ export function useDriverLocationTracking(
       clearQueuedSend,
       clearRetry,
       clearReadinessTimer,
+      ensureBackgroundTracking,
       prepareLocation,
       sendSnapshot,
       startHeartbeat,
+      stopNativeBackgroundTracking,
     ],
   );
 
@@ -1040,6 +1123,7 @@ export function useDriverLocationTracking(
     clearQueuedSend();
     clearHeartbeat();
     clearReadinessTimer();
+    stopNativeBackgroundTracking();
 
     if (watchIdRef.current !== null) {
       geolocationService.clearWatch(watchIdRef.current);
@@ -1059,7 +1143,13 @@ export function useDriverLocationTracking(
       setIsSending(false);
       setTransmissionStatus('idle');
     }
-  }, [clearHeartbeat, clearQueuedSend, clearReadinessTimer, clearRetry]);
+  }, [
+    clearHeartbeat,
+    clearQueuedSend,
+    clearReadinessTimer,
+    clearRetry,
+    stopNativeBackgroundTracking,
+  ]);
 
   const flushLatestLocation = useCallback(async () => {
     let snapshot = latestSnapshotRef.current;
@@ -1135,6 +1225,7 @@ export function useDriverLocationTracking(
     transmissionStatus,
     lastSentAt,
     lastLocation,
+    snappedLocation,
     error,
     prepareLocation,
     getPreflightFailure,

@@ -132,6 +132,10 @@ function hasOwn(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+function hasValue(value: unknown): boolean {
+  return value !== null && value !== undefined && value !== '';
+}
+
 export function normalizeBusLocationUpdate(
   value: unknown,
 ): BusLocationUpdate | null {
@@ -141,19 +145,14 @@ export function normalizeBusLocationUpdate(
 
   const bus = value as Record<string, unknown>;
   const busId = String(bus.bus_id || '').trim();
-  const hasLatitude = hasOwn(bus, 'lat');
-  const hasLongitude = hasOwn(bus, 'lng');
-  const hasDisplayLatitude = hasOwn(bus, 'displayLatitude');
-  const hasDisplayLongitude = hasOwn(bus, 'displayLongitude');
-  const hasRawLatitude = hasOwn(bus, 'rawLatitude');
-  const hasRawLongitude = hasOwn(bus, 'rawLongitude');
+  const hasLatitude = hasValue(bus.lat);
+  const hasLongitude = hasValue(bus.lng);
+  const hasDisplayLatitude = hasValue(bus.displayLatitude);
+  const hasDisplayLongitude = hasValue(bus.displayLongitude);
+  const hasRawLatitude = hasValue(bus.rawLatitude);
+  const hasRawLongitude = hasValue(bus.rawLongitude);
 
-  if (
-    !busId ||
-    hasLatitude !== hasLongitude ||
-    hasDisplayLatitude !== hasDisplayLongitude ||
-    hasRawLatitude !== hasRawLongitude
-  ) {
+  if (!busId || hasLatitude !== hasLongitude) {
     return null;
   }
 
@@ -209,7 +208,16 @@ export function normalizeBusLocationUpdate(
     'displayLongitude',
     'distanceFromRouteMeters',
   ] as const) {
-    if (!hasOwn(bus, field)) {
+    if (!hasOwn(bus, field) || !hasValue(bus[field])) {
+      continue;
+    }
+
+    if (
+      ((field === 'displayLatitude' || field === 'displayLongitude') &&
+        (!hasDisplayLatitude || !hasDisplayLongitude)) ||
+      ((field === 'rawLatitude' || field === 'rawLongitude') &&
+        (!hasRawLatitude || !hasRawLongitude))
+    ) {
       continue;
     }
 
@@ -229,7 +237,7 @@ export function normalizeBusLocationUpdate(
   }
 
   for (const field of ['updatedAt', 'statusUpdatedAt'] as const) {
-    if (!hasOwn(bus, field)) {
+    if (!hasOwn(bus, field) || !hasValue(bus[field])) {
       continue;
     }
 
@@ -251,7 +259,7 @@ export function normalizeBusLocationUpdate(
     }
   }
 
-  if (hasOwn(bus, 'isActive')) {
+  if (hasOwn(bus, 'isActive') && hasValue(bus.isActive)) {
     if (typeof bus.isActive !== 'boolean') {
       return null;
     }
@@ -259,7 +267,10 @@ export function normalizeBusLocationUpdate(
     update.isActive = bus.isActive;
   }
 
-  if (hasOwn(bus, 'isRouteDeviation')) {
+  if (
+    hasOwn(bus, 'isRouteDeviation') &&
+    hasValue(bus.isRouteDeviation)
+  ) {
     if (typeof bus.isRouteDeviation !== 'boolean') {
       return null;
     }
@@ -267,11 +278,14 @@ export function normalizeBusLocationUpdate(
     update.isRouteDeviation = bus.isRouteDeviation;
   }
 
-  if (hasOwn(bus, 'direction')) {
+  if (hasOwn(bus, 'direction') && hasValue(bus.direction)) {
     update.direction = String(bus.direction || '').trim();
   }
 
-  if (hasOwn(bus, 'operationalStatus')) {
+  if (
+    hasOwn(bus, 'operationalStatus') &&
+    hasValue(bus.operationalStatus)
+  ) {
     const operationalStatus = String(bus.operationalStatus || '')
       .trim()
       .toLowerCase() as BusOperationalStatus;

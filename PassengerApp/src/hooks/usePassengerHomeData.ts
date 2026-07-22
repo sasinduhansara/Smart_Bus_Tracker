@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { LatLng } from 'react-native-maps';
+import type { CoordinatePoint } from '../types';
 
 import {
   getBuses,
@@ -82,7 +82,7 @@ function getEtaRequestKey(
 }
 
 export function usePassengerHomeData(
-  userLocation: LatLng | null,
+  userLocation: CoordinatePoint | null,
 ): PassengerHomeData {
   const mountedRef = useRef(true);
   const requestSequenceRef = useRef(0);

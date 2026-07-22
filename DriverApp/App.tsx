@@ -17,12 +17,15 @@ import {
 import LoginScreen from './src/screens/LoginScreen';
 import RegisterScreen from './src/screens/RegisterScreen';
 import OtpVerifyScreen from './src/screens/OtpVerifyScreen';
+import DriverAccessGateScreen from './src/screens/DriverAccessGateScreen';
+import BusOnboardingScreen from './src/screens/BusOnboardingScreen';
 import DriverHomeScreen from './src/screens/DriverHomeScreen';
 import PendingApprovalScreen from './src/screens/PendingApprovalScreen';
 import TripsScreen from './src/screens/TripsScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
 import RouteDetailsScreen from './src/screens/RouteDetailsScreen';
+import { DriverRouteMapScreen } from './src/screens/DriverRouteMapScreen';
 
 import { useAuthStore } from './src/store/useAuthStore';
 import { configureUnauthorizedHandler } from './src/services/api';
@@ -90,6 +93,22 @@ function App(): React.JSX.Element {
           <Stack.Screen name="OtpVerify" component={OtpVerifyScreen} />
 
           <Stack.Screen
+            name="DriverAccessGate"
+            component={DriverAccessGateScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+
+          <Stack.Screen
+            name="BusOnboarding"
+            component={BusOnboardingScreen}
+            options={{
+              headerShown: false,
+            }}
+          />
+
+          <Stack.Screen
             name="PendingApproval"
             component={PendingApprovalScreen}
             initialParams={initialDriverParams}
@@ -106,6 +125,8 @@ function App(): React.JSX.Element {
           <Stack.Screen name="Profile" component={ProfileScreen} />
 
           <Stack.Screen name="RouteDetails" component={RouteDetailsScreen} />
+          
+          <Stack.Screen name="DriverRouteMap" component={DriverRouteMapScreen} />
 
           <Stack.Screen
             name="Notifications"

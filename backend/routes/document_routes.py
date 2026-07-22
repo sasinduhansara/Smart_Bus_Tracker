@@ -344,23 +344,30 @@ def upload_driver_document(driver_id):
     driver_object_id = validate_driver_id(driver_id)
 
     if driver_object_id is None:
-        return jsonify({
-            "error": "Invalid driver id",
-        }), 400
+        return jsonify({"error": "Invalid driver id"}), 400
 
     driver = drivers_collection.find_one({
         "_id": driver_object_id,
     })
 
     if not driver:
+        return jsonify({"error": "Driver not found"}), 404
+
+    verification_status = str(
+        driver.get("verificationStatus", "pending")
+    ).strip().lower()
+
+    if verification_status in {"blocked", "rejected"}:
         return jsonify({
-            "error": "Driver not found",
-        }), 404
+            "error": (
+                "Documents cannot be changed while the driver account is "
+                f"{verification_status}"
+            ),
+            "verificationStatus": verification_status,
+        }), 409
 
     if "file" not in request.files:
-        return jsonify({
-            "error": "No file provided",
-        }), 400
+        return jsonify({"error": "No file provided"}), 400
 
     document_type = normalize_document_type(
         request.form.get("docType")
@@ -384,9 +391,7 @@ def upload_driver_document(driver_id):
     )
 
     if validation_error:
-        return jsonify({
-            "error": validation_error,
-        }), 400
+        return jsonify({"error": validation_error}), 400
 
     mobile = str(
         driver.get("mobile", driver_id)
@@ -414,19 +419,81 @@ def upload_driver_document(driver_id):
     }
     previous_document = current_documents.get(document_type)
     revision, revision_condition = kyc_revision_snapshot(driver)
+
+    raw_correction_fields = driver.get("correctionFields")
+    correction_fields = [
+        str(field)
+        for field in raw_correction_fields
+        if str(field) in DOCUMENT_TYPES
+    ] if isinstance(raw_correction_fields, list) else []
+
+    remaining_correction_fields = [
+        field
+        for field in correction_fields
+        if field != document_type
+    ]
+
     update_fields = {
         document_field: result,
         "updatedAt": now,
         "kycRevision": revision + 1,
     }
-    if has_all_required_documents(updated_documents):
-        update_fields["kycStatus"] = "SUBMITTED"
-        if str(driver.get("verificationStatus", "")).lower() in {
-            "approved",
-            "verified",
-            "rejected",
-        }:
-            update_fields["verificationStatus"] = "under_review"
+    unset_fields = {}
+
+    documents_complete = has_all_required_documents(updated_documents)
+    missing_document_fields = [
+        field
+        for field in DOCUMENT_TYPES
+        if not (
+            isinstance(updated_documents.get(field), dict)
+            and updated_documents[field].get("fileName")
+            and updated_documents[field].get("url")
+        )
+    ]
+
+    if verification_status == "correction_required":
+        active_correction_fields = sorted({
+            *remaining_correction_fields,
+            *missing_document_fields,
+        })
+
+        if active_correction_fields:
+            update_fields.update({
+                "verificationStatus": "correction_required",
+                "kycStatus": "CORRECTION_REQUIRED",
+                "correctionFields": active_correction_fields,
+            })
+        else:
+            update_fields.update({
+                "verificationStatus": "under_review",
+                "kycStatus": "UNDER_REVIEW",
+                "correctionSubmittedAt": now,
+            })
+            unset_fields.update({
+                "correctionFields": "",
+                "correctionMessage": "",
+                "correctionRequestedAt": "",
+                "correctionRequestedBy": "",
+            })
+    elif documents_complete:
+        if verification_status in {"approved", "verified"}:
+            update_fields.update({
+                "verificationStatus": "under_review",
+                "kycStatus": "UNDER_REVIEW",
+                "resubmittedAt": now,
+            })
+        elif verification_status == "under_review":
+            update_fields["kycStatus"] = "UNDER_REVIEW"
+        else:
+            update_fields["kycStatus"] = "SUBMITTED"
+    else:
+        update_fields["kycStatus"] = "NOT_SUBMITTED"
+
+    update_document = {
+        "$set": update_fields,
+    }
+    if unset_fields:
+        update_document["$unset"] = unset_fields
 
     update_result = drivers_collection.update_one(
         {
@@ -445,9 +512,7 @@ def upload_driver_document(driver_id):
                 ),
             ],
         },
-        {
-            "$set": update_fields,
-        },
+        update_document,
     )
 
     if update_result.matched_count != 1:
@@ -457,16 +522,18 @@ def upload_driver_document(driver_id):
             current_app.logger.exception(
                 "Could not clean up an unassigned uploaded document"
             )
+
         if drivers_collection.find_one(
             {"_id": driver_object_id},
             {"_id": 1},
         ):
             return jsonify({
                 "error": (
-                    "Driver verification or document state changed during upload; "
-                    "reload and retry"
+                    "Driver verification or document state changed during "
+                    "upload; reload and retry"
                 ),
             }), 409
+
         return jsonify({"error": "Driver not found"}), 404
 
     previous_file_name = str(
@@ -475,20 +542,38 @@ def upload_driver_document(driver_id):
         else ""
     ).strip()
     new_file_name = str(result.get("fileName") or "").strip()
+
     if previous_file_name and previous_file_name != new_file_name:
         try:
             delete_document(previous_file_name)
         except Exception:
-            # The new reference is already authoritative. Log cleanup failure
-            # without exposing storage details or rolling back a valid upload.
             current_app.logger.exception(
                 "Could not remove the replaced driver document"
             )
 
-    return build_upload_response(
-        document_type,
-        result,
-    )
+    response = {
+        "status": "uploaded",
+        "docType": document_type,
+        "url": result.get("url", ""),
+        "fileName": result.get("fileName", ""),
+        "mimeType": result.get("mimeType", ""),
+        "document": result,
+        "verificationStatus": update_fields.get(
+            "verificationStatus",
+            verification_status,
+        ),
+        "kycStatus": update_fields.get(
+            "kycStatus",
+            driver.get("kycStatus", "NOT_SUBMITTED"),
+        ),
+    }
+
+    active_fields = update_fields.get("correctionFields")
+    if isinstance(active_fields, list) and active_fields:
+        response["remainingCorrectionFields"] = active_fields
+
+    return jsonify(response)
+
 
 @document_bp.route(
     "/api/driver/<driver_id>/documents",
@@ -585,15 +670,23 @@ def delete_driver_document(
             "error": "Driver not found",
         }), 404
 
-    if str(driver.get("verificationStatus", "")).lower() in {
+    verification_status = str(
+        driver.get("verificationStatus", "")
+    ).strip().lower()
+
+    if verification_status in {
         "approved",
         "verified",
+        "blocked",
+        "rejected",
     }:
         return jsonify({
             "error": (
-                "Approved identity documents cannot be deleted. "
-                "Upload a replacement for administrator review instead."
+                "Identity documents cannot be deleted while the driver "
+                f"account is {verification_status}. Upload a replacement "
+                "when document review is allowed."
             ),
+            "verificationStatus": verification_status,
         }), 409
 
     document_info = driver.get(
@@ -625,7 +718,12 @@ def delete_driver_document(
                 {document_field: document_info},
                 {
                     "verificationStatus": {
-                        "$nin": ["approved", "verified"],
+                        "$nin": [
+                            "approved",
+                            "verified",
+                            "blocked",
+                            "rejected",
+                        ],
                     },
                 },
             ],
@@ -651,15 +749,22 @@ def delete_driver_document(
         )
         if not current_driver:
             return jsonify({"error": "Driver not found"}), 404
-        if str(current_driver.get("verificationStatus", "")).lower() in {
+        current_status = str(
+            current_driver.get("verificationStatus", "")
+        ).strip().lower()
+
+        if current_status in {
             "approved",
             "verified",
+            "blocked",
+            "rejected",
         }:
             return jsonify({
                 "error": (
-                    "Approved identity documents cannot be deleted. "
-                    "Upload a replacement for administrator review instead."
+                    "Identity documents cannot be deleted while the driver "
+                    f"account is {current_status}."
                 ),
+                "verificationStatus": current_status,
             }), 409
         return jsonify({
             "error": "Document state changed; reload and retry",

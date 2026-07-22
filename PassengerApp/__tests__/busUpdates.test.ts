@@ -99,6 +99,54 @@ describe('passenger bus update contract', () => {
     ).toBeNull();
   });
 
+  it('keeps valid bus coordinates when optional legacy fields are null', () => {
+    expect(
+      normalizeBusLocation({
+        bus_id: 'WP-NB-1234',
+        lat: 6.9271,
+        lng: 79.8612,
+        speed: null,
+        heading: null,
+        displayLatitude: null,
+        displayLongitude: null,
+        operationalStatus: null,
+        isActive: null,
+        updatedAt: '2026-07-16T12:00:20.000Z',
+      }),
+    ).toEqual({
+      bus_id: 'WP-NB-1234',
+      lat: 6.9271,
+      lng: 79.8612,
+      updatedAt: '2026-07-16T12:00:20.000Z',
+    });
+  });
+
+  it('falls back to raw coordinates when display coordinates are incomplete', () => {
+    const update = normalizeBusLocation({
+      bus_id: 'WP-NB-1234',
+      lat: 6.9271,
+      lng: 79.8612,
+      displayLatitude: null,
+      displayLongitude: 79.87,
+      updatedAt: '2026-07-16T12:00:20.000Z',
+    });
+
+    expect(update).not.toBeNull();
+    expect(getBusDisplayCoordinate(update!)).toEqual({
+      latitude: 6.9271,
+      longitude: 79.8612,
+    });
+  });
+
+  it('never returns an invalid native map coordinate', () => {
+    expect(
+      getBusDisplayCoordinate({
+        ...liveBus,
+        lat: Number.NaN,
+      }),
+    ).toBeNull();
+  });
+
   it('rejects malformed lifecycle updates and partial coordinates', () => {
     expect(
       normalizeBusLocationUpdate({

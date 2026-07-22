@@ -16,18 +16,14 @@ import {
   View,
 } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
-import MapView, {
-  Marker,
-  Polyline,
-  PROVIDER_GOOGLE,
-  type LatLng,
-} from 'react-native-maps';
+import { PassengerMapView, type PassengerMapViewRef } from '../components/map/PassengerMapView';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import AnimatedBusMarker from '../components/map/AnimatedBusMarker';
+
 import {
   formatBusDirection,
   getBusDisplayCoordinate,
+  isValidMapCoordinate,
 } from '../utils/busDisplay';
 import {
   getBuses,
@@ -98,11 +94,13 @@ function getMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function routePointToLatLng(point: CoordinatePoint): LatLng {
-  return {
+function routePointToLatLng(point: CoordinatePoint): {latitude: number; longitude: number} | null {
+  const coordinate = {
     latitude: point.latitude,
     longitude: point.longitude,
   };
+
+  return isValidMapCoordinate(coordinate) ? coordinate : null;
 }
 
 function statusLabel(status: SocketConnectionStatus): string {
@@ -165,7 +163,7 @@ function LiveMapScreen({
   initialRouteNumber,
   initialStopId,
 }: LiveMapScreenProps): React.JSX.Element {
-  const mapRef = useRef<MapView | null>(null);
+  const mapRef = useRef<PassengerMapViewRef | null>(null);
   const mountedRef = useRef(true);
   const requestSequenceRef = useRef(0);
   const busUpdateSequenceRef = useRef(0);
@@ -188,7 +186,7 @@ function LiveMapScreen({
   const [selectedStopId, setSelectedStopId] = useState<string | null>(
     initialStopId || null,
   );
-  const [userLocation, setUserLocation] = useState<LatLng | null>(null);
+  const [userLocation, setUserLocation] = useState<{latitude: number; longitude: number} | null>(null);
   const [socketStatus, setSocketStatus] =
     useState<SocketConnectionStatus>('disconnected');
   const [loading, setLoading] = useState(true);
@@ -347,10 +345,13 @@ function LiveMapScreen({
       Geolocation.getCurrentPosition(
         position => {
           if (mountedRef.current) {
-            setUserLocation({
+            const coordinate = {
               latitude: position.coords.latitude,
               longitude: position.coords.longitude,
-            });
+            };
+            setUserLocation(
+              isValidMapCoordinate(coordinate) ? coordinate : null,
+            );
           }
         },
         locationError => {
@@ -417,22 +418,40 @@ function LiveMapScreen({
   }, [selectedRouteNumber]);
 
   useEffect(() => {
-    if (!routeDetails || routeDetails.polyline.length < 2) {
+    if (selectedRouteNumber) {
+      passengerSocket.subscribeRoute(selectedRouteNumber);
+      return () => {
+        passengerSocket.unsubscribeRoute(selectedRouteNumber);
+      };
+    }
+  }, [selectedRouteNumber]);
+
+  useEffect(() => {
+    const routeCoordinates = (routeDetails?.polyline || [])
+      .map(routePointToLatLng)
+      .filter((point): point is {latitude: number; longitude: number} => point !== null);
+
+    if (routeCoordinates.length < 2) {
       return;
     }
 
+    let minLat = 90;
+    let maxLat = -90;
+    let minLng = 180;
+    let maxLng = -180;
+
+    routeCoordinates.forEach(coord => {
+      if (coord.latitude < minLat) minLat = coord.latitude;
+      if (coord.latitude > maxLat) maxLat = coord.latitude;
+      if (coord.longitude < minLng) minLng = coord.longitude;
+      if (coord.longitude > maxLng) maxLng = coord.longitude;
+    });
+
     const timer = setTimeout(() => {
-      mapRef.current?.fitToCoordinates(
-        routeDetails.polyline.map(routePointToLatLng),
-        {
-          edgePadding: {
-            top: 140,
-            right: 42,
-            bottom: 320,
-            left: 42,
-          },
-          animated: true,
-        },
+      mapRef.current?.fitBounds(
+        [maxLng, maxLat],
+        [minLng, minLat],
+        80
       );
     }, 250);
 
@@ -481,8 +500,32 @@ function LiveMapScreen({
   );
 
   const mapBuses = useMemo(
-    () => filteredBuses.filter(bus => getBusStatus(bus, now) !== 'offline'),
+    () =>
+      filteredBuses.filter(
+        bus =>
+          getBusStatus(bus, now) !== 'offline' &&
+          getBusDisplayCoordinate(bus) !== null,
+      ),
     [filteredBuses, now],
+  );
+
+  const routePolyline = useMemo(
+    () =>
+      (routeDetails?.polyline || [])
+        .map(routePointToLatLng)
+        .filter((point): point is LatLng => point !== null),
+    [routeDetails],
+  );
+
+  const routeStopsWithCoordinates = useMemo(
+    () =>
+      (routeDetails?.stops || []).filter(stop =>
+        isValidMapCoordinate({
+          latitude: stop.latitude,
+          longitude: stop.longitude,
+        }),
+      ),
+    [routeDetails],
   );
 
   const liveBusCount = useMemo(
@@ -539,14 +582,13 @@ function LiveMapScreen({
       }
 
       const displayCoordinate = getBusDisplayCoordinate(bus);
-      mapRef.current?.animateToRegion(
-        {
-          ...displayCoordinate,
-          latitudeDelta: 0.03,
-          longitudeDelta: 0.03,
-        },
-        500,
-      );
+      if (displayCoordinate) {
+        mapRef.current?.flyTo(
+          displayCoordinate.longitude,
+          displayCoordinate.latitude,
+          14,
+        );
+      }
     },
     [selectedRouteNumber],
   );
@@ -726,20 +768,7 @@ function LiveMapScreen({
     </View>
   );
 
-  const renderBusMarker = (bus: BusLocation) => {
-    const isSelected = selectedBusId === bus.bus_id;
-    const busStatus = getBusStatus(bus, now);
 
-    return (
-      <AnimatedBusMarker
-        key={bus.bus_id}
-        bus={bus}
-        borderColor={statusColor(busStatus)}
-        selected={isSelected}
-        onPress={() => handleSelectBus(bus)}
-      />
-    );
-  };
 
   const renderBottomCard = () => {
     if (loading) {
@@ -971,54 +1000,19 @@ function LiveMapScreen({
       style={styles.container}
       edges={['top', 'left', 'right']}
     >
-      <MapView
+      <PassengerMapView
         ref={mapRef}
-        provider={PROVIDER_GOOGLE}
-        style={styles.map}
-        initialRegion={DEFAULT_REGION}
-        showsCompass
-        showsMyLocationButton
-        showsUserLocation={Boolean(userLocation)}
-      >
-        {!!routeDetails && routeDetails.polyline.length >= 2 && (
-          <Polyline
-            coordinates={routeDetails.polyline.map(routePointToLatLng)}
-            strokeColor={COLORS.primary}
-            strokeWidth={5}
-            lineCap="round"
-            lineJoin="round"
-          />
-        )}
-
-        {!!routeDetails &&
-          routeDetails.stops.map(stop => {
-            const isSelected = selectedStopId === stop.id;
-
-            return (
-              <Marker
-                key={stop.id}
-                coordinate={{
-                  latitude: stop.latitude,
-                  longitude: stop.longitude,
-                }}
-                title={stop.name}
-                description={`Stop ${stop.sequence}`}
-                pinColor={isSelected ? COLORS.accent : COLORS.blue}
-                zIndex={isSelected ? 8 : 2}
-              />
-            );
-          })}
-
-        {mapBuses.map(renderBusMarker)}
-
-        {!!userLocation && (
-          <Marker
-            coordinate={userLocation}
-            title="Your location"
-            pinColor={COLORS.primaryDark}
-          />
-        )}
-      </MapView>
+        buses={mapBuses}
+        selectedBusId={selectedBusId}
+        selectedRoute={routeDetails}
+        onBusPress={busId => {
+          const bus = buses[busId];
+          if (bus) handleSelectBus(bus);
+        }}
+        onMapPress={() => {
+          setSelectedBusId(null);
+        }}
+      />
 
       <View style={styles.topPanel}>
         <View style={styles.topHeader}>

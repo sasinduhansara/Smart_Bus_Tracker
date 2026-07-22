@@ -1,4 +1,4 @@
-import type { LatLng } from 'react-native-maps';
+import type { CoordinatePoint } from '../types';
 
 import type {
   BusLocation,
@@ -71,7 +71,7 @@ export function buildNearbyBuses(
   buses: BusLocation[],
   routes: RouteSummary[],
   routeDetails: Record<string, RouteDetails>,
-  userLocation: LatLng | null,
+  userLocation: CoordinatePoint | null,
   now: number,
 ): NearbyBus[] {
   const routeNames = new Map(

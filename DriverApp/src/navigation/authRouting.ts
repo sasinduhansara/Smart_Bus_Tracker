@@ -1,26 +1,39 @@
-import type { AuthSession } from '../types';
-import type { RootStackParamList } from '../types/navigation';
+import type {
+  AuthSession,
+} from '../types';
+
+import type {
+  RootStackParamList,
+} from '../types/navigation';
+
+type InitialDriverRoute =
+  | 'Login'
+  | 'DriverAccessGate';
 
 export function getInitialDriverRoute(
   session: AuthSession | null,
-): keyof RootStackParamList {
-  if (!session) {
-    return 'Login';
-  }
-
-  const status = session.driver.verificationStatus;
-
-  return status === 'approved' || status === 'verified'
-    ? 'DriverHome'
-    : 'PendingApproval';
+): InitialDriverRoute {
+  return session
+    ? 'DriverAccessGate'
+    : 'Login';
 }
 
-export function getDriverNavigationKey(session: AuthSession | null): string {
-  const route = getInitialDriverRoute(session);
-
-  if (route === 'Login') {
+export function getDriverNavigationKey(
+  session: AuthSession | null,
+): string {
+  if (!session) {
     return 'signed-out';
   }
 
-  return route === 'DriverHome' ? 'approved-driver' : 'driver-review';
+  return 'signed-in-driver';
+}
+
+export function isDriverEntryRoute(
+  route:
+    keyof RootStackParamList,
+): boolean {
+  return (
+    route === 'Login' ||
+    route === 'DriverAccessGate'
+  );
 }

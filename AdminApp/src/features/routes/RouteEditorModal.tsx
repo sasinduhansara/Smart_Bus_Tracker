@@ -1,0 +1,444 @@
+import { useState, type ChangeEvent, type FormEvent } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  MapPinned,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from "lucide-react";
+
+import { createAdminRoute, updateAdminRoute } from "../../api/routesApi";
+import { Notice } from "../../components/common/Notice";
+import type {
+  RouteDetails,
+  RouteInput,
+  RouteRecordStatus,
+  RouteServiceCategory,
+} from "../../types/route";
+import { getErrorMessage } from "../../utils/errors";
+
+interface RouteEditorModalProps {
+  route: RouteDetails | null;
+  onClose: () => void;
+  onSaved: (message: string) => void;
+}
+
+interface EditableStop {
+  key: string;
+  id?: string;
+  name: string;
+}
+
+const categoryOptions: Array<{
+  value: Exclude<RouteServiceCategory, "ac">;
+  label: string;
+}> = [
+  { value: "sltb", label: "SLTB" },
+  { value: "private", label: "Private" },
+  { value: "intercity", label: "Intercity" },
+];
+
+function createStopKey(): string {
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function emptyStop(): EditableStop {
+  return {
+    key: createStopKey(),
+    name: "",
+  };
+}
+
+function routeStops(route: RouteDetails | null): EditableStop[] {
+  if (!route || route.stops.length < 2) {
+    return [emptyStop(), emptyStop()];
+  }
+
+  return route.stops.map((stop) => ({
+    key: stop.id || createStopKey(),
+    id: stop.id,
+    name: stop.name,
+  }));
+}
+
+export function RouteEditorModal({
+  route,
+  onClose,
+  onSaved,
+}: RouteEditorModalProps) {
+  const existingCategories = (
+    route?.serviceCategories ?? ["sltb", "private"]
+  ).filter(
+    (category): category is Exclude<RouteServiceCategory, "ac"> =>
+      category !== "ac",
+  );
+
+  const [routeNumber, setRouteNumber] = useState(route?.routeNumber ?? "");
+  const [name, setName] = useState(route?.name ?? "");
+  const [recordStatus, setRecordStatus] = useState<RouteRecordStatus>(
+    route?.recordStatus ?? "active",
+  );
+  const [serviceCategories, setServiceCategories] =
+    useState<Array<Exclude<RouteServiceCategory, "ac">>>(existingCategories);
+  const [depotName, setDepotName] = useState(route?.depotName ?? "");
+  const [stops, setStops] = useState<EditableStop[]>(() => routeStops(route));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const origin = stops[0]?.name.trim() || "Start stop";
+  const destination = stops.at(-1)?.name.trim() || "End stop";
+
+  const updateStop = (key: string, value: string) => {
+    setStops((current) =>
+      current.map((stop) =>
+        stop.key === key ? { ...stop, name: value } : stop,
+      ),
+    );
+  };
+
+  const addStop = () => {
+    setStops((current) => {
+      if (current.length < 2) {
+        return [...current, emptyStop()];
+      }
+
+      return [
+        ...current.slice(0, -1),
+        emptyStop(),
+        current[current.length - 1],
+      ];
+    });
+  };
+
+  const moveStop = (index: number, directionDelta: -1 | 1) => {
+    const targetIndex = index + directionDelta;
+    if (targetIndex < 0 || targetIndex >= stops.length) {
+      return;
+    }
+
+    setStops((current) => {
+      const next = [...current];
+      const [moved] = next.splice(index, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  };
+
+  const removeStop = (key: string) => {
+    if (stops.length <= 2) {
+      setError("A route must contain a start stop and an end stop.");
+      return;
+    }
+
+    setStops((current) => current.filter((stop) => stop.key !== key));
+  };
+
+  const toggleCategory = (category: Exclude<RouteServiceCategory, "ac">) => {
+    setServiceCategories((current) =>
+      current.includes(category)
+        ? current.filter((item) => item !== category)
+        : [...current, category],
+    );
+  };
+
+  const validate = (): string => {
+    if (!routeNumber.trim()) {
+      return "Route number is required.";
+    }
+    if (!name.trim()) {
+      return "Route name is required.";
+    }
+    if (!depotName.trim()) {
+      return "Depot name is required.";
+    }
+    if (serviceCategories.length === 0) {
+      return "Select at least one service allowed on this route.";
+    }
+    if (stops.length < 2) {
+      return "Add a start stop and an end stop.";
+    }
+
+    for (let index = 0; index < stops.length; index += 1) {
+      if (!stops[index].name.trim()) {
+        if (index === 0) {
+          return "Start stop name is required.";
+        }
+        if (index === stops.length - 1) {
+          return "End stop name is required.";
+        }
+        return `Stop ${index + 1} name is required.`;
+      }
+    }
+
+    return "";
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    const payload: RouteInput = {
+      routeNumber: routeNumber.trim().toUpperCase(),
+      name: name.trim(),
+      depotName: depotName.trim(),
+      recordStatus,
+      serviceCategories,
+      direction: route?.direction ?? "outbound",
+      stops: stops.map((stop) => ({
+        id: stop.id,
+        name: stop.name.trim(),
+      })),
+    };
+
+    setSaving(true);
+    setError("");
+
+    try {
+      if (route) {
+        await updateAdminRoute(route.id, payload);
+        onSaved(`Route ${payload.routeNumber} updated successfully.`);
+      } else {
+        await createAdminRoute(payload);
+        onSaved(`Route ${payload.routeNumber} created successfully.`);
+      }
+    } catch (saveError) {
+      setError(getErrorMessage(saveError, "Could not save the route"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form
+        className="modal route-editor-modal"
+        onSubmit={handleSubmit}
+        aria-label={route ? "Edit route" : "Create route"}
+      >
+        <div className="modal-heading">
+          <div className="editor-title-row">
+            <span className="editor-icon">
+              <MapPinned size={18} />
+            </span>
+            <div>
+              <h2>{route ? "Edit route" : "Create route"}</h2>
+              <p className="muted">
+                Add the basic route details and stop names in travel order.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            className="icon-button"
+            onClick={onClose}
+            aria-label="Close route editor"
+            disabled={saving}
+          >
+            <X size={17} />
+          </button>
+        </div>
+
+        {error ? <Notice tone="error" message={error} /> : null}
+
+        <div className="operations-form-grid route-form-grid">
+          <label>
+            Route number
+            <input
+              value={routeNumber}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                setRouteNumber(event.target.value)
+              }
+              placeholder="Example: 123"
+              maxLength={30}
+            />
+          </label>
+
+          <label>
+            Master status
+            <select
+              value={recordStatus}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                setRecordStatus(event.target.value as RouteRecordStatus)
+              }
+            >
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+            </select>
+          </label>
+
+          <label className="operations-form-wide">
+            Route name
+            <input
+              value={name}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                setName(event.target.value)
+              }
+              placeholder="Example: Kuliyapitiya - Kurunegala"
+              maxLength={160}
+            />
+          </label>
+
+          <label className="operations-form-wide">
+            Depot name
+            <input
+              value={depotName}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                setDepotName(event.target.value)
+              }
+              placeholder="Example: Kuliyapitiya Depot"
+              maxLength={140}
+            />
+          </label>
+
+          <fieldset className="route-category-fieldset operations-form-wide">
+            <legend>Services allowed on this route</legend>
+            <div className="route-category-options">
+              {categoryOptions.map((option) => (
+                <label key={option.value} className="route-category-option">
+                  <input
+                    type="checkbox"
+                    checked={serviceCategories.includes(option.value)}
+                    onChange={() => toggleCategory(option.value)}
+                  />
+                  <span>{option.label}</span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        </div>
+
+        <section className="route-stop-editor">
+          <div className="route-stop-editor-heading">
+            <div>
+              <h3>Ordered stops</h3>
+              <p className="muted">
+                Enter stop names only. The first is the start stop and the last
+                is the end stop.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={addStop}
+            >
+              <Plus size={15} />
+              Add stop
+            </button>
+          </div>
+
+          <div className="route-stop-list">
+            {stops.map((stop, index) => {
+              const isStart = index === 0;
+              const isEnd = index === stops.length - 1;
+              const label = isStart
+                ? "Start stop"
+                : isEnd
+                  ? "End stop"
+                  : `Stop ${index + 1}`;
+
+              return (
+                <article className="route-stop-row" key={stop.key}>
+                  <div
+                    className={`route-stop-sequence ${
+                      isStart || isEnd ? "route-stop-terminal" : ""
+                    }`}
+                  >
+                    {isStart ? "Start" : isEnd ? "End" : index + 1}
+                  </div>
+
+                  <div className="route-stop-fields route-stop-name-only">
+                    <label>
+                      {label}
+                      <input
+                        value={stop.name}
+                        onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                          updateStop(stop.key, event.target.value)
+                        }
+                        placeholder={
+                          isStart
+                            ? "Starting bus stand"
+                            : isEnd
+                              ? "Destination bus stand"
+                              : "Bus stop name"
+                        }
+                        maxLength={140}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="route-stop-actions">
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => moveStop(index, -1)}
+                      disabled={index === 0}
+                      aria-label={`Move stop ${index + 1} up`}
+                    >
+                      <ArrowUp size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      onClick={() => moveStop(index, 1)}
+                      disabled={index === stops.length - 1}
+                      aria-label={`Move stop ${index + 1} down`}
+                    >
+                      <ArrowDown size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button danger"
+                      onClick={() => removeStop(stop.key)}
+                      aria-label={`Remove stop ${index + 1}`}
+                      disabled={stops.length <= 2}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+
+        <div className="route-derived-summary">
+          <span>
+            <small>Start stop</small>
+            <strong>{origin}</strong>
+          </span>
+          <span>
+            <small>End stop</small>
+            <strong>{destination}</strong>
+          </span>
+          <span>
+            <small>Depot</small>
+            <strong>{depotName.trim() || "Not entered"}</strong>
+          </span>
+        </div>
+
+        <div className="modal-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onClose}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+          <button type="submit" className="primary-button" disabled={saving}>
+            <Save size={16} />
+            {saving ? "Saving..." : route ? "Save changes" : "Create route"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}

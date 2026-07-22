@@ -15,6 +15,7 @@ export class PassengerSocketService {
   private lastErrorMessage: string | null = null;
   private ownerCount = 0;
   private releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private routeSubscriptions = new Set<string>();
 
   connect() {
     this.ownerCount += 1;
@@ -86,6 +87,26 @@ export class PassengerSocketService {
     };
   }
 
+  /**
+   * Subscribe to live bus updates for a specific route.
+   * Must be called after connect() and re-called after each reconnect.
+   */
+  subscribeRoute(routeNumber: string) {
+    this.socket?.emit('subscribe_route', { routeNumber });
+  }
+
+  unsubscribeRoute(routeNumber: string) {
+    this.socket?.emit('unsubscribe_route', { routeNumber });
+  }
+
+  subscribeBus(busId: string) {
+    this.socket?.emit('subscribe_bus', { busId });
+  }
+
+  unsubscribeBus(busId: string) {
+    this.socket?.emit('unsubscribe_bus', { busId });
+  }
+
   private bindCoreListeners(socket: Socket) {
     socket.on('connect', () => {
       console.log('[PassengerSocket] connected');
@@ -108,6 +129,8 @@ export class PassengerSocketService {
     socket.io.on('reconnect', attempt => {
       console.log('[PassengerSocket] reconnected:', attempt);
       this.setStatus('connected');
+      // Re-subscribe to any active route rooms so we don't miss updates.
+      this.routeSubscriptions.forEach(r => this.subscribeRoute(r));
     });
 
     socket.io.on('error', error => {

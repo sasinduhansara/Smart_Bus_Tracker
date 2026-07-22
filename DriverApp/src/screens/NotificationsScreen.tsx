@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
+  Pressable,
   RefreshControl,
   StatusBar,
   StyleSheet,
@@ -18,7 +20,11 @@ import {
   ErrorState,
   LoadingState,
 } from '../components/driver';
-import { getDriverNotifications } from '../services/api';
+import {
+  getDriverNotifications,
+  markAllDriverNotificationsRead,
+  markDriverNotificationRead,
+} from '../services/api';
 import {
   driverColors,
   driverRadii,
@@ -73,6 +79,8 @@ export default function NotificationsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [markingIds, setMarkingIds] = useState<Set<string>>(new Set());
+  const [markingAll, setMarkingAll] = useState(false);
 
   const loadNotifications = useCallback(async (refresh = false) => {
     const sequence = ++requestSequenceRef.current;
@@ -83,7 +91,7 @@ export default function NotificationsScreen() {
     }
 
     try {
-      const response = await getDriverNotifications(50);
+      const response = await getDriverNotifications(20);
 
       if (mountedRef.current && sequence === requestSequenceRef.current) {
         setNotifications(response.notifications);
@@ -116,6 +124,80 @@ export default function NotificationsScreen() {
 
   const unreadCount = notifications.filter(notification => !notification.read)
     .length;
+
+  const markAsRead = useCallback(
+    async (notification: DriverNotification) => {
+      if (notification.read || markingIds.has(notification.id)) {
+        return;
+      }
+
+      setMarkingIds(current => new Set(current).add(notification.id));
+      setError(null);
+
+      try {
+        const response = await markDriverNotificationRead(notification.id);
+
+        if (mountedRef.current) {
+          setNotifications(current =>
+            current.map(item =>
+              item.id === notification.id ? response.notification : item,
+            ),
+          );
+        }
+      } catch (readError) {
+        if (mountedRef.current) {
+          setError(
+            readError instanceof Error
+              ? readError.message
+              : 'Notification could not be marked as read.',
+          );
+        }
+      } finally {
+        if (mountedRef.current) {
+          setMarkingIds(current => {
+            const next = new Set(current);
+            next.delete(notification.id);
+            return next;
+          });
+        }
+      }
+    },
+    [markingIds],
+  );
+
+  const markAllAsRead = useCallback(async () => {
+    if (!unreadCount || markingAll) {
+      return;
+    }
+
+    setMarkingAll(true);
+    setError(null);
+
+    try {
+      await markAllDriverNotificationsRead();
+
+      if (mountedRef.current) {
+        setNotifications(current =>
+          current.map(notification => ({
+            ...notification,
+            read: true,
+          })),
+        );
+      }
+    } catch (readError) {
+      if (mountedRef.current) {
+        setError(
+          readError instanceof Error
+            ? readError.message
+            : 'Notifications could not be marked as read.',
+        );
+      }
+    } finally {
+      if (mountedRef.current) {
+        setMarkingAll(false);
+      }
+    }
+  }, [markingAll, unreadCount]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -156,9 +238,40 @@ export default function NotificationsScreen() {
             />
           }
           ListHeaderComponent={
-            error ? (
-              <View accessibilityRole="alert" style={styles.errorBanner}>
-                <Text style={styles.errorText}>{error}</Text>
+            error || unreadCount ? (
+              <View style={styles.listHeader}>
+                {error ? (
+                  <View accessibilityRole="alert" style={styles.errorBanner}>
+                    <Text style={styles.errorText}>{error}</Text>
+                  </View>
+                ) : null}
+
+                {unreadCount ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Mark all notifications as read"
+                    disabled={markingAll}
+                    onPress={() => markAllAsRead().catch(() => undefined)}
+                    style={({ pressed }) => [
+                      styles.markAllButton,
+                      pressed && styles.buttonPressed,
+                    ]}
+                  >
+                    {markingAll ? (
+                      <ActivityIndicator
+                        color={driverColors.textOnDark}
+                        size="small"
+                      />
+                    ) : (
+                      <Icon
+                        color={driverColors.textOnDark}
+                        name="checkmark-done-outline"
+                        size={18}
+                      />
+                    )}
+                    <Text style={styles.markAllText}>Mark all as read</Text>
+                  </Pressable>
+                ) : null}
               </View>
             ) : null
           }
@@ -177,7 +290,13 @@ export default function NotificationsScreen() {
               tintColor={driverColors.teal700}
             />
           }
-          renderItem={({ item }) => <NotificationCard notification={item} />}
+          renderItem={({ item }) => (
+            <NotificationCard
+              busy={markingIds.has(item.id)}
+              notification={item}
+              onPress={() => markAsRead(item).catch(() => undefined)}
+            />
+          )}
           showsVerticalScrollIndicator={false}
         />
       )}
@@ -186,18 +305,32 @@ export default function NotificationsScreen() {
 }
 
 function NotificationCard({
+  busy,
   notification,
+  onPress,
 }: {
+  busy: boolean;
   notification: DriverNotification;
+  onPress: () => void;
 }) {
   const status = notification.read ? 'Read' : 'Unread';
 
   return (
-    <View
+    <Pressable
+      accessibilityRole="button"
       accessibilityLabel={`${status} notification. ${notification.title}. ${
         notification.message || 'No additional message.'
       }. ${formatTimestamp(notification.createdAt)}`}
-      style={[styles.card, !notification.read && styles.cardUnread]}
+      accessibilityHint={
+        notification.read ? 'Already read' : 'Marks this notification as read'
+      }
+      disabled={notification.read || busy}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.card,
+        !notification.read && styles.cardUnread,
+        pressed && styles.buttonPressed,
+      ]}
     >
       <View
         accessibilityElementsHidden
@@ -233,7 +366,7 @@ function NotificationCard({
           {formatTimestamp(notification.createdAt)}
         </Text>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -253,6 +386,9 @@ const styles = StyleSheet.create({
     gap: driverSpacing.sm,
     padding: driverSpacing.md,
   },
+  listHeader: {
+    gap: driverSpacing.sm,
+  },
   errorBanner: {
     padding: driverSpacing.sm,
     borderRadius: driverRadii.control,
@@ -262,6 +398,25 @@ const styles = StyleSheet.create({
     color: driverColors.error,
     fontSize: driverTypography.body,
     fontWeight: driverTypography.weights.semibold,
+  },
+  markAllButton: {
+    minHeight: driverSizes.minimumTouchTarget,
+    alignSelf: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: driverSpacing.xs,
+    paddingHorizontal: driverSpacing.md,
+    borderRadius: driverRadii.pill,
+    backgroundColor: driverColors.teal700,
+  },
+  markAllText: {
+    color: driverColors.textOnDark,
+    fontSize: driverTypography.label,
+    fontWeight: driverTypography.weights.bold,
+  },
+  buttonPressed: {
+    opacity: 0.72,
   },
   card: {
     minHeight: 96,

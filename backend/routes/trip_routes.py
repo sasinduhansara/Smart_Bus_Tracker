@@ -7,6 +7,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from pymongo.errors import DuplicateKeyError
 
 from config import (
+    TRIP_START_LOCATION_POLICY,
     buses_collection,
     drivers_collection,
     issue_reports_collection,
@@ -50,8 +51,6 @@ MAX_ISSUE_MESSAGE_LENGTH = 1000
 MAX_TRIP_START_LOCATION_AGE_SECONDS = 30
 MAX_TRIP_START_LOCATION_FUTURE_SECONDS = 10
 MAX_TRIP_START_ACCURACY_METERS = 100
-SRI_LANKA_LATITUDE_RANGE = (5.5, 10.2)
-SRI_LANKA_LONGITUDE_RANGE = (79.0, 82.5)
 
 
 class BusStatusConflict(Exception):
@@ -89,20 +88,6 @@ def _parse_trip_start_location(data: Any, now: datetime):
             "The GPS coordinates are invalid.",
             "LOCATION_INVALID",
             400,
-        )
-
-    if not (
-        SRI_LANKA_LATITUDE_RANGE[0]
-        <= latitude
-        <= SRI_LANKA_LATITUDE_RANGE[1]
-        and SRI_LANKA_LONGITUDE_RANGE[0]
-        <= longitude
-        <= SRI_LANKA_LONGITUDE_RANGE[1]
-    ):
-        return None, _trip_start_error(
-            "The GPS coordinate is outside the supported service area.",
-            "OUTSIDE_SERVICE_AREA",
-            422,
         )
 
     accuracy = parse_number(
@@ -235,12 +220,15 @@ def _evaluate_trip_readiness(
 
     terminals = route.get("terminals") or []
     if len(terminals) < 2:
-        return None, _trip_start_error(
-            "The assigned route does not have trip-start terminals configured.",
-            "ROUTE_TERMINALS_NOT_CONFIGURED",
-            409,
-            routeNumber=route_number,
+        from services.route_service import _build_terminals
+        terminals = _build_terminals(
+            route.get("stops", []),
+            route.get("terminalRadiusMeters", 500.0),
+            polyline=route.get("polyline"),
+            origin_name=route.get("origin"),
+            dest_name=route.get("destination"),
         )
+        route["terminals"] = terminals
 
     start_location, location_error = _parse_trip_start_location(data, now)
     if location_error:
@@ -256,14 +244,19 @@ def _evaluate_trip_readiness(
         terminals,
     )
     if destination_terminal is None:
-        return None, _trip_start_error(
-            "The assigned route does not have a destination terminal configured.",
-            "ROUTE_TERMINALS_NOT_CONFIGURED",
-            409,
-            routeNumber=route_number,
-        )
+        destination_terminal = {
+            "id": "end-terminal",
+            "name": route.get("destination") or "End Terminal",
+            "latitude": start_location["lat"],
+            "longitude": start_location["lng"],
+            "startRadiusMeters": allowed_radius_meters,
+        }
 
-    can_start = nearest_distance_meters <= allowed_radius_meters
+    # Trip starts are permanently location-unrestricted for this project.
+    # The nearest terminal is still calculated to determine trip direction and
+    # preserve the existing passenger-facing route metadata.
+    can_start = True
+
     nearest_terminal_payload = {
         "id": start_terminal["id"],
         "name": start_terminal["name"],
@@ -281,6 +274,7 @@ def _evaluate_trip_readiness(
         "startTerminal": start_terminal,
         "destinationTerminal": destination_terminal,
         "canStart": can_start,
+        "policyMode": TRIP_START_LOCATION_POLICY,
         "nearestTerminal": nearest_terminal_payload,
         "direction": (
             f'{start_terminal["id"]}_to_{destination_terminal["id"]}'
@@ -551,25 +545,15 @@ def trip_readiness():
         "locationFresh": True,
         "accuracyAcceptable": True,
         "canStart": can_start,
+        "policyMode": readiness["policyMode"],
         "nearestTerminal": nearest_terminal,
-        "direction": (
-            {
-                "value": readiness["direction"],
-                "origin": start_terminal["name"],
-                "destination": destination_terminal["name"],
-            }
-            if can_start
-            else None
-        ),
-        "code": "READY_TO_START" if can_start else "OUTSIDE_START_GEOFENCE",
-        "message": (
-            f'Ready to start toward {destination_terminal["name"]}.'
-            if can_start
-            else (
-                f'Move {nearest_terminal["remainingDistanceMeters"]} metres '
-                f'closer to {start_terminal["name"]} to start this trip.'
-            )
-        ),
+        "direction": {
+            "value": readiness["direction"],
+            "origin": start_terminal["name"],
+            "destination": destination_terminal["name"],
+        },
+        "code": "READY_TO_START",
+        "message": f'Ready to start toward {destination_terminal["name"]}.',
     })
 
 
@@ -589,14 +573,6 @@ def start_trip():
     )
     if readiness_error:
         return readiness_error
-
-    if not readiness["canStart"]:
-        return _trip_start_error(
-            "Move closer to an approved route terminal to start this trip.",
-            "OUTSIDE_START_GEOFENCE",
-            403,
-            nearestTerminal=readiness["nearestTerminal"],
-        )
 
     bus_id = readiness["busId"]
     route_number = readiness["routeNumber"]
@@ -656,6 +632,7 @@ def start_trip():
         "destinationTerminalId": destination_terminal["id"],
         "destinationTerminalName": destination_terminal["name"],
         "direction": direction,
+        "tripStartLocationPolicy": readiness["policyMode"],
         "startLatitude": start_location["lat"],
         "startLongitude": start_location["lng"],
         "startAccuracy": start_location["accuracy"],

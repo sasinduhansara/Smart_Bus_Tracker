@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+
 import {
   ActivityIndicator,
   Alert,
@@ -12,15 +13,14 @@ import {
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 import AuthScreenShell from '../components/AuthScreenShell';
+
 import { verifyLoginOTP, verifyRegisterOTP } from '../services/api';
+
 import { useAuthStore } from '../store/useAuthStore';
+
 import { useDriverRegistrationStore } from '../store/useDriverRegistrationStore';
 
-import type {
-  DriverSession,
-  VerificationStatus,
-  VerifyOTPResponse,
-} from '../types';
+import type { VerificationStatus, VerifyOTPResponse } from '../types';
 
 import type { RootStackParamList } from '../types/navigation';
 
@@ -33,9 +33,55 @@ type VerificationResponse = VerifyOTPResponse & {
   status?: string;
 };
 
-type NormalizedVerificationStatus = VerificationStatus | 'unknown';
+type NormalizedVerificationStatus =
+  | VerificationStatus
+  | 'correction_required'
+  | 'unknown';
 
 const OTP_LENGTH = 6;
+
+function normalizeVerificationStatus(
+  response: VerificationResponse,
+): NormalizedVerificationStatus {
+  const status = String(response.verificationStatus ?? response.status ?? '')
+    .trim()
+    .toLowerCase();
+
+  switch (status) {
+    case 'approved':
+    case 'verified':
+    case 'pending':
+    case 'blocked':
+    case 'rejected':
+    case 'unverified':
+    case 'under_review':
+    case 'correction_required':
+      return status;
+
+    default:
+      return 'unknown';
+  }
+}
+
+function sessionVerificationStatus(
+  status: NormalizedVerificationStatus,
+): VerificationStatus {
+  switch (status) {
+    case 'approved':
+    case 'verified':
+    case 'pending':
+    case 'blocked':
+    case 'rejected':
+    case 'unverified':
+    case 'under_review':
+      return status;
+
+    case 'correction_required':
+    case 'unknown':
+    default:
+      return 'pending';
+  }
+}
 
 function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
   const { mobile, purpose } = route.params;
@@ -43,6 +89,7 @@ function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
   const inputRef = useRef<TextInput>(null);
 
   const [otp, setOtp] = useState('');
+
   const [loading, setLoading] = useState(false);
 
   const resetRegistration = useDriverRegistrationStore(
@@ -50,6 +97,7 @@ function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
   );
 
   const establishSession = useAuthStore(state => state.establishSession);
+
   const logout = useAuthStore(state => state.logout);
 
   const canVerify = otp.length === OTP_LENGTH && !loading;
@@ -64,117 +112,75 @@ function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
     };
   }, []);
 
-  const getVerificationStatus = (
-    response: VerificationResponse,
-  ): NormalizedVerificationStatus => {
-    const status = (response.verificationStatus ?? response.status ?? '')
-      .trim()
-      .toLowerCase();
-
-    switch (status) {
-      case 'approved':
-      case 'verified':
-      case 'pending':
-      case 'blocked':
-      case 'rejected':
-      case 'unverified':
-      case 'under_review':
-        return status;
-
-      default:
-        return 'unknown';
-    }
-  };
-
   const resetToLogin = () => {
-    navigation.reset({
-      index: 0,
-      routes: [{ name: 'Login' }],
-    });
-  };
-
-  const resetToDriverRoute = (
-    screenName: 'DriverHome' | 'PendingApproval',
-    driver: DriverSession,
-  ) => {
     navigation.reset({
       index: 0,
       routes: [
         {
-          name: screenName,
-          params: {
-            driver,
-          },
+          name: 'Login',
         },
       ],
     });
   };
 
-  const navigateByVerificationStatus = async (data: VerificationResponse) => {
-    const verificationStatus = getVerificationStatus(data);
+  const resetToAccessGate = () => {
+    navigation.reset({
+      index: 0,
+      routes: [
+        {
+          name: 'DriverAccessGate',
+        },
+      ],
+    });
+  };
 
-    switch (verificationStatus) {
-      case 'approved':
-      case 'verified': {
-        if (purpose === 'register') {
-          resetRegistration();
-        }
+  const handleVerificationResponse = async (data: VerificationResponse) => {
+    const verificationStatus = normalizeVerificationStatus(data);
 
-        const session = await establishSession({
-          ...data,
-          verificationStatus,
-        });
+    if (verificationStatus === 'blocked') {
+      await logout();
 
-        resetToDriverRoute('DriverHome', session.driver);
-        return;
-      }
+      Alert.alert(
+        'Account Blocked',
+        'Your account has been blocked. Please contact the administrator.',
+        [
+          {
+            text: 'OK',
+            onPress: resetToLogin,
+          },
+        ],
+      );
 
-      case 'pending':
-      case 'unverified':
-      case 'under_review':
-      case 'rejected': {
-        if (purpose === 'register') {
-          resetRegistration();
-        }
-
-        const session = await establishSession({
-          ...data,
-          verificationStatus,
-        });
-
-        resetToDriverRoute('PendingApproval', session.driver);
-        return;
-      }
-
-      case 'blocked':
-        await logout();
-
-        Alert.alert(
-          'Account Blocked',
-          'Your account has been blocked. Please contact the administrator.',
-          [
-            {
-              text: 'OK',
-              onPress: resetToLogin,
-            },
-          ],
-        );
-        return;
-
-      default:
-        await logout();
-
-        Alert.alert(
-          'Verification Status Error',
-          'OTP verification was successful, but your account status could not be identified. Please log in again.',
-          [
-            {
-              text: 'OK',
-              onPress: resetToLogin,
-            },
-          ],
-        );
+      return;
     }
+
+    if (verificationStatus === 'unknown') {
+      await logout();
+
+      Alert.alert(
+        'Verification Status Error',
+        'OTP verification was successful, but the account status could not be identified. Please sign in again.',
+        [
+          {
+            text: 'OK',
+            onPress: resetToLogin,
+          },
+        ],
+      );
+
+      return;
+    }
+
+    await establishSession({
+      ...data,
+      verificationStatus: sessionVerificationStatus(verificationStatus),
+    });
+
+    if (purpose === 'register') {
+      resetRegistration();
+    }
+
+    resetToAccessGate();
   };
 
   const verifyOtp = async () => {
@@ -182,6 +188,7 @@ function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
 
     if (!/^\d{6}$/.test(normalizedOtp)) {
       Alert.alert('Invalid OTP', 'Please enter the 6-digit verification code.');
+
       return;
     }
 
@@ -200,7 +207,7 @@ function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
         data = await verifyLoginOTP(mobile, normalizedOtp);
       }
 
-      await navigateByVerificationStatus(data);
+      await handleVerificationResponse(data);
     } catch (error) {
       const message =
         error instanceof Error
@@ -264,8 +271,11 @@ function OtpVerifyScreen({ route, navigation }: OtpVerifyScreenProps) {
           />
 
           <View style={styles.otpRow}>
-            {Array.from({ length: OTP_LENGTH }).map((_, index) => {
+            {Array.from({
+              length: OTP_LENGTH,
+            }).map((_, index) => {
               const digit = otp[index] ?? '';
+
               const isFilled = Boolean(digit);
 
               const isActive =

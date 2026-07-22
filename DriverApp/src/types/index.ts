@@ -217,6 +217,10 @@ export interface DriverRouteStop extends CoordinatePoint {
   id: string;
   name: string;
   sequence: number;
+  location?: {
+    type: "Point";
+    coordinates: [number, number]; // [longitude, latitude]
+  };
 }
 
 export interface DriverRouteTerminal extends CoordinatePoint {
@@ -230,9 +234,16 @@ export interface DriverRouteDetails {
   name: string;
   direction: string;
   polyline: CoordinatePoint[];
+  geometry?: {
+    type: "LineString";
+    coordinates: [number, number][]; // Array of [longitude, latitude]
+  };
+  geometryVersion?: number;
   stops: DriverRouteStop[];
   terminals?: DriverRouteTerminal[];
 }
+
+export type RouteDetails = DriverRouteDetails;
 
 export interface RouteDetailsResponse {
   status: 'success';

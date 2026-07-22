@@ -1,9 +1,18 @@
+import os
+import re
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Literal, TypedDict
 
+from bson.objectid import ObjectId
 from pymongo.errors import PyMongoError
 
 from config import routes_collection
-from data.route_data import DEVELOPMENT_ROUTES
+
+try:
+    from data.route_data import DEVELOPMENT_ROUTES
+except ImportError:
+    DEVELOPMENT_ROUTES: list[dict[str, Any]] = []
 
 
 class RoutePoint(TypedDict):
@@ -11,10 +20,12 @@ class RoutePoint(TypedDict):
     longitude: float
 
 
-class BusStop(RoutePoint):
+class BusStop(TypedDict, total=False):
     id: str
     name: str
     sequence: int
+    latitude: float
+    longitude: float
 
 
 class RouteTerminal(RoutePoint):
@@ -24,19 +35,39 @@ class RouteTerminal(RoutePoint):
 
 
 class RouteDetails(TypedDict):
+    id: str
     routeNumber: str
     name: str
+    origin: str
+    destination: str
+    depotName: str
     direction: str
+    serviceCategories: list[str]
+    recordStatus: str
+    isActive: bool
+    terminalRadiusMeters: float
     polyline: list[RoutePoint]
+    geometry: dict[str, Any] | None
+    geometryVersion: int | None
     stops: list[BusStop]
     terminals: list[RouteTerminal]
+    createdAt: str
+    updatedAt: str
 
 
 class RouteSummary(TypedDict):
+    id: str
     routeNumber: str
     name: str
+    origin: str
+    destination: str
+    depotName: str
     direction: str
+    serviceCategories: list[str]
+    recordStatus: str
+    isActive: bool
     stopCount: int
+    updatedAt: str
 
 
 class PassengerSearchResultBase(TypedDict):
@@ -48,12 +79,83 @@ class PassengerSearchResultBase(TypedDict):
 
 
 class PassengerSearchResult(PassengerSearchResultBase, total=False):
+    routeId: str
+    direction: str
     stopId: str
 
+
+ROUTE_DIRECTIONS = {"outbound", "return"}
+ROUTE_STATUSES = {"active", "inactive"}
+SERVICE_CATEGORIES = {"sltb", "private", "ac", "intercity"}
 
 DEFAULT_SEARCH_LIMIT = 8
 MAX_SEARCH_LIMIT = 25
 MAX_SEARCH_QUERY_LENGTH = 80
+DEFAULT_TERMINAL_RADIUS_METERS = 500.0
+MAX_STOPS_PER_ROUTE = 250
+
+
+class RouteValidationError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        field: str = "",
+        code: str = "INVALID_ROUTE",
+    ):
+        super().__init__(message)
+        self.message = message
+        self.field = field
+        self.code = code
+
+
+def _iso_value(value: Any) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value) if value else ""
+
+
+def _development_fallback_enabled() -> bool:
+    return os.getenv(
+        "ENABLE_DEVELOPMENT_ROUTE_FALLBACK",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _clean_text(value: Any, *, max_length: int) -> str:
+    return str(value or "").strip()[:max_length]
+
+
+def _identity_key(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _route_key(route_number: str, direction: str) -> str:
+    return f"{_identity_key(route_number)}:{direction}"
+
+
+def _normalize_direction(value: Any) -> str:
+    direction = str(value or "outbound").strip().lower()
+    if direction == "inbound":
+        direction = "return"
+    if direction not in ROUTE_DIRECTIONS:
+        raise RouteValidationError(
+            "direction must be outbound or return",
+            field="direction",
+        )
+    return direction
+
+
+def _normalize_record_status(value: Any) -> str:
+    status = str(value or "active").strip().lower()
+    if status not in ROUTE_STATUSES:
+        raise RouteValidationError(
+            "recordStatus must be active or inactive",
+            field="recordStatus",
+        )
+    return status
 
 
 def _parse_float(value: Any, minimum: float, maximum: float) -> float | None:
@@ -76,7 +178,20 @@ def _normalize_point(value: Any) -> RoutePoint | None:
         return None
 
     latitude = _parse_float(value.get("latitude"), -90, 90)
+    if latitude is None:
+        latitude = _parse_float(value.get("lat"), -90, 90)
+
     longitude = _parse_float(value.get("longitude"), -180, 180)
+    if longitude is None:
+        longitude = _parse_float(value.get("lng"), -180, 180)
+
+    if (latitude is None or longitude is None) and "location" in value:
+        loc = value["location"]
+        if isinstance(loc, dict) and "coordinates" in loc:
+            coords = loc.get("coordinates")
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                longitude = _parse_float(coords[0], -180, 180)
+                latitude = _parse_float(coords[1], -90, 90)
 
     if latitude is None or longitude is None:
         return None
@@ -87,47 +202,63 @@ def _normalize_point(value: Any) -> RoutePoint | None:
     }
 
 
-def _normalize_stop(value: Any) -> BusStop | None:
-    point = _normalize_point(value)
+def _legacy_stop_id(name: str, sequence: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    return f"{slug or 'stop'}-{sequence}"
 
-    if point is None or not isinstance(value, dict):
+
+def _normalize_stored_stop(value: Any, fallback_sequence: int) -> BusStop | None:
+    if not isinstance(value, dict):
         return None
 
-    stop_id = str(value.get("id") or value.get("_id") or "").strip()
-    name = str(value.get("name") or "").strip()
-
-    if not stop_id or not name:
+    name = _clean_text(value.get("name"), max_length=140)
+    if not name:
         return None
 
     try:
-        sequence = int(value.get("sequence"))
+        sequence = int(value.get("sequence", fallback_sequence))
     except (TypeError, ValueError):
-        return None
+        sequence = fallback_sequence
 
-    return {
+    stop_id = _clean_text(
+        value.get("id") or value.get("_id"),
+        max_length=120,
+    ) or _legacy_stop_id(name, sequence)
+
+    stop: BusStop = {
         "id": stop_id,
         "name": name,
-        "latitude": point["latitude"],
-        "longitude": point["longitude"],
         "sequence": sequence,
     }
 
+    point = _normalize_point(value)
+    if point is not None:
+        stop.update(point)
 
-def _normalize_terminal(value: Any) -> RouteTerminal | None:
+    return stop
+
+
+def _normalize_stored_terminal(value: Any) -> RouteTerminal | None:
     point = _normalize_point(value)
 
     if point is None or not isinstance(value, dict):
         return None
 
-    terminal_id = str(value.get("id") or value.get("_id") or "").strip()
-    name = str(value.get("name") or "").strip()
-    start_radius_meters = _parse_float(
-        value.get("startRadiusMeters", 500),
+    terminal_id = _clean_text(
+        value.get("id") or value.get("_id"),
+        max_length=120,
+    )
+    name = _clean_text(value.get("name"), max_length=140)
+    # Stored/legacy route documents previously allowed any positive radius
+    # up to 10 km. Keep reads backward-compatible while new admin payloads
+    # continue to enforce the stricter 50-5000 metre range.
+    radius = _parse_float(
+        value.get("startRadiusMeters", DEFAULT_TERMINAL_RADIUS_METERS),
         1,
         10000,
     )
 
-    if not terminal_id or not name or start_radius_meters is None:
+    if not terminal_id or not name or radius is None:
         return None
 
     return {
@@ -135,135 +266,737 @@ def _normalize_terminal(value: Any) -> RouteTerminal | None:
         "name": name,
         "latitude": point["latitude"],
         "longitude": point["longitude"],
-        "startRadiusMeters": start_radius_meters,
+        "startRadiusMeters": radius,
     }
+
+
+def _normalize_service_categories(value: Any, *, required: bool) -> list[str]:
+    if value is None:
+        if required:
+            raise RouteValidationError(
+                "Select at least one service category",
+                field="serviceCategories",
+            )
+        return ["sltb", "private"]
+
+    if not isinstance(value, list):
+        raise RouteValidationError(
+            "serviceCategories must be a list",
+            field="serviceCategories",
+        )
+
+    categories: list[str] = []
+    invalid_categories: list[str] = []
+
+    for item in value:
+        category = str(item or "").strip().lower()
+        if not category:
+            continue
+        if category not in SERVICE_CATEGORIES:
+            invalid_categories.append(category)
+            continue
+        if category not in categories:
+            categories.append(category)
+
+    if invalid_categories:
+        raise RouteValidationError(
+            "One or more service categories are invalid",
+            field="serviceCategories",
+            code="INVALID_SERVICE_CATEGORY",
+        )
+
+    if not categories:
+        raise RouteValidationError(
+            "Select at least one service category",
+            field="serviceCategories",
+        )
+
+    return categories
+
+
+def _normalize_payload_stops(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise RouteValidationError(
+            "stops must be a list",
+            field="stops",
+        )
+
+    if not 2 <= len(value) <= MAX_STOPS_PER_ROUTE:
+        raise RouteValidationError(
+            f"A route must contain between 2 and {MAX_STOPS_PER_ROUTE} stops",
+            field="stops",
+        )
+
+    stops: list[dict[str, Any]] = []
+    stop_ids: set[str] = set()
+
+    for index, raw_stop in enumerate(value, start=1):
+        if not isinstance(raw_stop, dict):
+            raise RouteValidationError(
+                f"Stop {index} is invalid",
+                field="stops",
+            )
+
+        name = _clean_text(raw_stop.get("name"), max_length=140)
+        if not name:
+            raise RouteValidationError(
+                f"Stop {index} name is required",
+                field="stops",
+            )
+
+        stop_id = _clean_text(raw_stop.get("id"), max_length=120)
+        if not stop_id:
+            stop_id = uuid.uuid4().hex
+
+        if stop_id in stop_ids:
+            raise RouteValidationError(
+                "Each stop must have a unique id",
+                field="stops",
+                code="DUPLICATE_STOP_ID",
+            )
+
+        stop_ids.add(stop_id)
+        stop: dict[str, Any] = {
+            "id": stop_id,
+            "name": name,
+            "nameKey": name.casefold(),
+            "sequence": index,
+        }
+
+        latitude_supplied = raw_stop.get("latitude") not in (None, "")
+        longitude_supplied = raw_stop.get("longitude") not in (None, "")
+        if latitude_supplied or longitude_supplied:
+            latitude = _parse_float(raw_stop.get("latitude"), -90, 90)
+            longitude = _parse_float(raw_stop.get("longitude"), -180, 180)
+            if latitude is None or longitude is None:
+                raise RouteValidationError(
+                    f"Stop {index} coordinates must both be valid",
+                    field="stops",
+                )
+            stop.update({
+                "latitude": latitude,
+                "longitude": longitude,
+            })
+
+        stops.append(stop)
+
+    return stops
+
+
+def _normalize_payload_polyline(
+    value: Any,
+    stops: list[dict[str, Any]],
+) -> list[RoutePoint]:
+    if value in (None, []):
+        points = [
+            {
+                "latitude": stop["latitude"],
+                "longitude": stop["longitude"],
+            }
+            for stop in stops
+            if "latitude" in stop and "longitude" in stop
+        ]
+        return points if len(points) >= 2 else []
+
+    if not isinstance(value, list):
+        raise RouteValidationError(
+            "polyline must be a list",
+            field="polyline",
+        )
+
+    points = [_normalize_point(point) for point in value]
+    if len(points) < 2 or any(point is None for point in points):
+        raise RouteValidationError(
+            "polyline must contain at least two valid coordinates",
+            field="polyline",
+        )
+
+    return [point for point in points if point is not None]
+
+
+def _build_terminals(
+    stops: list[dict[str, Any]] | list[BusStop],
+    radius: float,
+    polyline: list[dict[str, Any]] | None = None,
+    origin_name: str | None = None,
+    dest_name: str | None = None,
+) -> list[RouteTerminal]:
+    first_pt: tuple[float, float] | None = None
+    last_pt: tuple[float, float] | None = None
+    first_name = origin_name or "Start Terminal"
+    last_name = dest_name or "End Terminal"
+    first_id = "start-terminal"
+    last_id = "end-terminal"
+
+    if stops and len(stops) >= 2:
+        f = stops[0]
+        l = stops[-1]
+        p_first = _normalize_point(f) if isinstance(f, dict) else None
+        p_last = _normalize_point(l) if isinstance(l, dict) else None
+        if p_first and p_last:
+            first_pt = (p_first["latitude"], p_first["longitude"])
+            last_pt = (p_last["latitude"], p_last["longitude"])
+            first_name = str(f.get("name") or first_name)
+            last_name = str(l.get("name") or last_name)
+            first_id = str(f.get("id") or first_id)
+            last_id = str(l.get("id") or last_id)
+
+    if not first_pt or not last_pt:
+        if polyline and len(polyline) >= 2:
+            p0 = polyline[0]
+            pn = polyline[-1]
+            if "latitude" in p0 and "longitude" in p0 and "latitude" in pn and "longitude" in pn:
+                first_pt = (float(p0["latitude"]), float(p0["longitude"]))
+                last_pt = (float(pn["latitude"]), float(pn["longitude"]))
+
+    # Default fallback coordinates for Sri Lanka if all else fails
+    if not first_pt:
+        first_pt = (6.9271, 79.8612)  # Colombo Fort
+    if not last_pt:
+        last_pt = (6.7106, 79.9074)   # Panadura / End
+
+    return [
+        {
+            "id": first_id,
+            "name": first_name,
+            "latitude": first_pt[0],
+            "longitude": first_pt[1],
+            "startRadiusMeters": radius,
+        },
+        {
+            "id": last_id,
+            "name": last_name,
+            "latitude": last_pt[0],
+            "longitude": last_pt[1],
+            "startRadiusMeters": radius,
+        },
+    ]
+
+
+def normalize_route_payload(
+    payload: Any,
+    *,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RouteValidationError("A JSON route payload is required")
+
+    existing = existing or {}
+
+    route_number = _clean_text(
+        payload.get("routeNumber", existing.get("routeNumber")),
+        max_length=30,
+    ).upper()
+    route_number_key = _identity_key(route_number)
+
+    if not route_number_key:
+        raise RouteValidationError(
+            "Route number is required",
+            field="routeNumber",
+        )
+
+    direction = _normalize_direction(
+        payload.get("direction", existing.get("direction", "outbound"))
+    )
+    record_status = _normalize_record_status(
+        payload.get(
+            "recordStatus",
+            existing.get(
+                "recordStatus",
+                "active" if existing.get("isActive", True) else "inactive",
+            ),
+        )
+    )
+
+    categories_value = payload.get(
+        "serviceCategories",
+        existing.get("serviceCategories"),
+    )
+    service_categories = _normalize_service_categories(
+        categories_value,
+        required=not bool(existing),
+    )
+
+    depot_name = _clean_text(
+        payload.get("depotName", existing.get("depotName")),
+        max_length=140,
+    )
+    if not depot_name:
+        raise RouteValidationError(
+            "Depot name is required",
+            field="depotName",
+        )
+
+    raw_stops = payload.get("stops", existing.get("stops"))
+    stops = _normalize_payload_stops(raw_stops)
+
+    terminal_radius = _parse_float(
+        payload.get(
+            "terminalRadiusMeters",
+            existing.get(
+                "terminalRadiusMeters",
+                DEFAULT_TERMINAL_RADIUS_METERS,
+            ),
+        ),
+        50,
+        5000,
+    )
+    if terminal_radius is None:
+        raise RouteValidationError(
+            "terminalRadiusMeters must be between 50 and 5000",
+            field="terminalRadiusMeters",
+        )
+
+    name = _clean_text(
+        payload.get("name", existing.get("name")),
+        max_length=160,
+    )
+    origin = str(stops[0]["name"])
+    destination = str(stops[-1]["name"])
+    if not name:
+        name = f"{origin} - {destination}"
+
+    polyline_source = (
+        payload.get("polyline")
+        if "stops" in payload
+        else existing.get("polyline")
+    )
+    polyline = _normalize_payload_polyline(
+        polyline_source,
+        stops,
+    )
+
+    version = int(existing.get("version") or 0) + 1
+
+    return {
+        "routeNumber": route_number,
+        "routeNumberKey": route_number_key,
+        "routeKey": _route_key(route_number, direction),
+        "name": name,
+        "nameKey": name.casefold(),
+        "origin": origin,
+        "originKey": origin.casefold(),
+        "destination": destination,
+        "destinationKey": destination.casefold(),
+        "depotName": depot_name,
+        "depotNameKey": depot_name.casefold(),
+        "direction": direction,
+        "serviceCategories": service_categories,
+        "recordStatus": record_status,
+        "isActive": record_status == "active",
+        "terminalRadiusMeters": terminal_radius,
+        "polyline": polyline,
+        "stops": stops,
+        "terminals": _build_terminals(stops, terminal_radius),
+        "version": version,
+    }
+
+    if "geometry" in payload or "geometry" in existing:
+        result["geometry"] = payload.get("geometry", existing.get("geometry"))
+        if "geometryVersion" in existing and "geometry" not in payload:
+            result["geometryVersion"] = existing["geometryVersion"]
+        elif "geometry" in payload:
+            result["geometryVersion"] = int(existing.get("geometryVersion") or 0) + 1
+            
+    return result
 
 
 def normalize_route(value: Any) -> RouteDetails | None:
     if not isinstance(value, dict):
         return None
 
-    route_number = str(value.get("routeNumber") or "").strip()
-    name = str(value.get("name") or route_number).strip()
-    direction = str(value.get("direction") or "outbound").strip()
-
+    route_number = _clean_text(value.get("routeNumber"), max_length=30)
     if not route_number:
         return None
+
+    try:
+        direction = _normalize_direction(value.get("direction", "outbound"))
+        record_status = _normalize_record_status(
+            value.get(
+                "recordStatus",
+                "active" if value.get("isActive", True) else "inactive",
+            )
+        )
+        service_categories = _normalize_service_categories(
+            value.get("serviceCategories"),
+            required=False,
+        )
+    except RouteValidationError:
+        return None
+
+    stops = [
+        stop
+        for index, stop in enumerate(
+            (
+                _normalize_stored_stop(raw_stop, fallback_sequence)
+                for fallback_sequence, raw_stop in enumerate(
+                    value.get("stops", []),
+                    start=1,
+                )
+            ),
+            start=1,
+        )
+        if stop is not None
+    ]
+    stops.sort(key=lambda stop: stop["sequence"])
+
+    # New create/update payloads require at least two stops, but older
+    # stored routes and the public search contract allowed a single valid
+    # stop. Reading those records must remain backward-compatible.
+    if not stops:
+        return None
+
+    for sequence, stop in enumerate(stops, start=1):
+        stop["sequence"] = sequence
 
     polyline = [
         point
         for point in (
-            _normalize_point(point)
-            for point in value.get("polyline", [])
+            _normalize_point(raw_point)
+            for raw_point in value.get("polyline", [])
         )
         if point is not None
     ]
+    if len(polyline) < 2:
+        coordinate_points = [
+            {
+                "latitude": stop["latitude"],
+                "longitude": stop["longitude"],
+            }
+            for stop in stops
+            if "latitude" in stop and "longitude" in stop
+        ]
+        polyline = coordinate_points if len(coordinate_points) >= 2 else []
 
-    stops = [
-        stop
-        for stop in (
-            _normalize_stop(stop)
-            for stop in value.get("stops", [])
-        )
-        if stop is not None
-    ]
-
-    stops.sort(key=lambda stop: stop["sequence"])
+    terminal_radius = _parse_float(
+        value.get("terminalRadiusMeters", DEFAULT_TERMINAL_RADIUS_METERS),
+        50,
+        5000,
+    ) or DEFAULT_TERMINAL_RADIUS_METERS
 
     terminals = [
         terminal
         for terminal in (
-            _normalize_terminal(terminal)
-            for terminal in value.get("terminals", [])
+            _normalize_stored_terminal(raw_terminal)
+            for raw_terminal in value.get("terminals", [])
         )
         if terminal is not None
     ]
+    origin = _clean_text(
+        value.get("origin") or (stops[0]["name"] if stops else "Start Terminal"),
+        max_length=140,
+    )
+    destination = _clean_text(
+        value.get("destination") or (stops[-1]["name"] if stops else "End Terminal"),
+        max_length=140,
+    )
+    if len(terminals) < 2:
+        terminals = _build_terminals(stops, terminal_radius, polyline=polyline, origin_name=origin, dest_name=destination)
+    name = _clean_text(
+        value.get("name") or f"{origin} - {destination}",
+        max_length=160,
+    )
+    depot_name = _clean_text(value.get("depotName"), max_length=140)
 
-    if len(polyline) < 2 or not stops:
-        return None
+    route_id = str(
+        value.get("_id")
+        or value.get("id")
+        or value.get("routeKey")
+        or _route_key(route_number, direction)
+    )
 
     return {
+        "id": route_id,
         "routeNumber": route_number,
         "name": name,
+        "origin": origin,
+        "destination": destination,
+        "depotName": depot_name,
         "direction": direction,
+        "serviceCategories": service_categories,
+        "recordStatus": record_status,
+        "isActive": record_status == "active",
+        "terminalRadiusMeters": terminal_radius,
         "polyline": polyline,
+        "geometry": value.get("geometry"),
+        "geometryVersion": value.get("geometryVersion"),
         "stops": stops,
         "terminals": terminals,
+        "createdAt": _iso_value(value.get("createdAt")),
+        "updatedAt": _iso_value(value.get("updatedAt")),
     }
 
 
-def _load_routes_from_database() -> list[RouteDetails]:
-    records = routes_collection.find(
-        {},
-        {
-            "_id": 0,
-            "routeNumber": 1,
-            "name": 1,
-            "direction": 1,
-            "polyline": 1,
-            "stops": 1,
-            "terminals": 1,
-        },
-    )
+def has_valid_geometry(route: dict[str, Any] | RouteDetails | None) -> bool:
+    """Return True if the route has a valid GeoJSON LineString geometry."""
+    if not route:
+        return False
+    geometry = route.get("geometry")
+    if not isinstance(geometry, dict):
+        return False
+    if geometry.get("type") != "LineString":
+        return False
+    coords = geometry.get("coordinates")
+    return isinstance(coords, list) and len(coords) >= 2
 
-    routes = [
+
+def _database_route_query(*, include_inactive: bool) -> dict[str, Any]:
+    if include_inactive:
+        return {}
+
+    return {
+        "$or": [
+            {"recordStatus": "active"},
+            {"recordStatus": {"$exists": False}, "isActive": {"$ne": False}},
+        ]
+    }
+
+
+def _load_routes_from_database(
+    *,
+    include_inactive: bool,
+) -> list[RouteDetails]:
+    records = routes_collection.find(
+        _database_route_query(include_inactive=include_inactive),
+    ).sort([
+        ("routeNumberKey", 1),
+        ("direction", 1),
+    ])
+
+    return [
         route
-        for route in (
-            normalize_route(record)
-            for record in records
-        )
+        for route in (normalize_route(record) for record in records)
         if route is not None
     ]
+
+
+def _load_development_routes() -> list[RouteDetails]:
+    if not _development_fallback_enabled():
+        return []
+
+    return [
+        route
+        for route in (normalize_route(record) for record in DEVELOPMENT_ROUTES)
+        if route is not None and route["isActive"]
+    ]
+
+
+def get_all_routes(*, include_inactive: bool = False) -> list[RouteDetails]:
+    try:
+        database_routes = _load_routes_from_database(
+            include_inactive=include_inactive,
+        )
+    except PyMongoError:
+        fallback_routes = _load_development_routes()
+        if fallback_routes:
+            return fallback_routes
+        raise
+
+    fallback_routes = _load_development_routes()
+    if not fallback_routes:
+        return database_routes
+
+    routes_by_key = {
+        _route_key(route["routeNumber"], route["direction"]): route
+        for route in fallback_routes
+    }
+    routes_by_key.update({
+        _route_key(route["routeNumber"], route["direction"]): route
+        for route in database_routes
+    })
+    return list(routes_by_key.values())
+
+
+def list_route_records(
+    *,
+    query: str = "",
+    status: str = "",
+    direction: str = "",
+) -> list[RouteDetails]:
+    normalized_status = status.strip().lower()
+    normalized_direction = direction.strip().lower()
+
+    if normalized_status and normalized_status not in ROUTE_STATUSES:
+        raise RouteValidationError(
+            "Invalid route status",
+            field="status",
+        )
+    if normalized_direction:
+        normalized_direction = _normalize_direction(normalized_direction)
+
+    routes = _load_routes_from_database(include_inactive=True)
+
+    if normalized_status:
+        routes = [
+            route
+            for route in routes
+            if route["recordStatus"] == normalized_status
+        ]
+    if normalized_direction:
+        routes = [
+            route
+            for route in routes
+            if route["direction"] == normalized_direction
+        ]
+
+    normalized_query = query.strip().casefold()[:MAX_SEARCH_QUERY_LENGTH]
+    if normalized_query:
+        routes = [
+            route
+            for route in routes
+            if normalized_query in " ".join((
+                route["routeNumber"],
+                route["name"],
+                route["origin"],
+                route["destination"],
+                route.get("depotName", ""),
+                route["direction"],
+                " ".join(route["serviceCategories"]),
+                " ".join(stop["name"] for stop in route["stops"]),
+            )).casefold()
+        ]
 
     return routes
 
 
-def get_all_routes() -> list[RouteDetails]:
-    try:
-        database_routes = _load_routes_from_database()
-    except PyMongoError:
-        if not DEVELOPMENT_ROUTES:
-            raise
-        database_routes = []
+def _route_lookup_query(
+    identifier: str,
+    *,
+    direction: str | None = None,
+) -> dict[str, Any]:
+    normalized_identifier = str(identifier or "").strip()
+    if not normalized_identifier:
+        return {"_id": None}
 
-    fallback_routes = [
-        route
-        for route in (
-            normalize_route(route)
-            for route in DEVELOPMENT_ROUTES
-        )
-        if route is not None
+    if ObjectId.is_valid(normalized_identifier):
+        return {"_id": ObjectId(normalized_identifier)}
+
+    conditions: list[dict[str, Any]] = [
+        {"routeNumberKey": _identity_key(normalized_identifier)},
+        {"routeNumber": normalized_identifier},
     ]
+    query: dict[str, Any] = {"$or": conditions}
 
-    if not fallback_routes:
-        return database_routes
+    if direction:
+        query["direction"] = _normalize_direction(direction)
 
-    # Local development can fill missing canonical routes without masking
-    # valid MongoDB route documents. Production deployments should seed the
-    # routes collection and leave ENABLE_DEVELOPMENT_ROUTE_FALLBACK disabled.
-    routes_by_number = {
-        route["routeNumber"]: route
-        for route in fallback_routes
-    }
-    routes_by_number.update({
-        route["routeNumber"]: route
-        for route in database_routes
-    })
-    return list(routes_by_number.values())
+    return query
 
 
-def get_route_details(route_number: str) -> RouteDetails | None:
+def _find_route_document(
+    identifier: str,
+    *,
+    direction: str | None = None,
+) -> dict[str, Any] | None:
+    query = _route_lookup_query(identifier, direction=direction)
+    return routes_collection.find_one(
+        query,
+        sort=[
+            ("recordStatus", 1),
+            ("direction", 1),
+            ("updatedAt", -1),
+        ],
+    )
+
+
+def get_route_admin_details(
+    identifier: str,
+    *,
+    direction: str | None = None,
+) -> RouteDetails | None:
+    document = _find_route_document(identifier, direction=direction)
+    return normalize_route(document) if document else None
+
+
+def get_route_details(
+    route_number: str,
+    direction: str | None = None,
+) -> RouteDetails | None:
+    document = _find_route_document(route_number, direction=direction)
+    route = normalize_route(document) if document else None
+
+    if route and route["isActive"]:
+        return route
+
     normalized_route_number = str(route_number or "").strip()
+    normalized_direction = (
+        _normalize_direction(direction) if direction else None
+    )
 
-    for route in get_all_routes():
-        if route["routeNumber"] == normalized_route_number:
-            return route
+    for fallback_route in _load_development_routes():
+        if fallback_route["routeNumber"] != normalized_route_number:
+            continue
+        if normalized_direction and fallback_route["direction"] != normalized_direction:
+            continue
+        return fallback_route
 
     return None
 
 
-def get_route_stops(route_number: str) -> list[BusStop] | None:
-    route = get_route_details(route_number)
+def create_route_record(
+    payload: Any,
+    *,
+    actor: str,
+) -> RouteDetails:
+    route = normalize_route_payload(payload)
+    now = datetime.now(timezone.utc)
+    route.update({
+        "createdAt": now,
+        "createdBy": actor,
+        "updatedAt": now,
+        "updatedBy": actor,
+    })
+
+    result = routes_collection.insert_one(route)
+    route["_id"] = result.inserted_id
+
+    normalized = normalize_route(route)
+    if normalized is None:
+        raise RuntimeError("Created route could not be serialized")
+    return normalized
+
+
+def update_route_record(
+    identifier: str,
+    payload: Any,
+    *,
+    actor: str,
+) -> RouteDetails | None:
+    existing = _find_route_document(identifier)
+    if not existing:
+        return None
+
+    route = normalize_route_payload(payload, existing=existing)
+    route.update({
+        "updatedAt": datetime.now(timezone.utc),
+        "updatedBy": actor,
+    })
+
+    result = routes_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": route},
+    )
+    if result.matched_count != 1:
+        return None
+
+    updated = routes_collection.find_one({"_id": existing["_id"]})
+    return normalize_route(updated) if updated else None
+
+
+def delete_route_record(identifier: str) -> bool:
+    existing = _find_route_document(identifier)
+    if not existing:
+        return False
+
+    result = routes_collection.delete_one({"_id": existing["_id"]})
+    return result.deleted_count == 1
+
+
+def get_route_stops(
+    route_number: str,
+    direction: str | None = None,
+) -> list[BusStop] | None:
+    route = get_route_details(route_number, direction=direction)
 
     if route is None:
         return None
@@ -273,10 +1006,18 @@ def get_route_stops(route_number: str) -> list[BusStop] | None:
 
 def route_to_summary(route: RouteDetails) -> RouteSummary:
     return {
+        "id": route["id"],
         "routeNumber": route["routeNumber"],
         "name": route["name"],
+        "origin": route["origin"],
+        "destination": route["destination"],
+        "depotName": route.get("depotName", ""),
         "direction": route["direction"],
+        "serviceCategories": route["serviceCategories"],
+        "recordStatus": route["recordStatus"],
+        "isActive": route["isActive"],
         "stopCount": len(route["stops"]),
+        "updatedAt": route["updatedAt"],
     }
 
 
@@ -284,7 +1025,21 @@ def search_routes_and_stops(
     query: str,
     limit: int = DEFAULT_SEARCH_LIMIT,
 ) -> list[PassengerSearchResult]:
-    normalized_query = query.strip().casefold()
+    """Search public route and stop labels without leaking admin fields.
+
+    This function intentionally preserves the original passenger API contract:
+    route results expose only id/type/title/subtitle/routeNumber and stop
+    results add stopId. Admin-only fields such as MongoDB ids, record status,
+    service categories and internal direction metadata are not returned.
+
+    Tests and older callers may mock lightweight legacy route dictionaries that
+    do not contain the newer origin/destination/id fields, so every search field
+    is derived defensively from the established routeNumber/name/direction/stops
+    contract.
+    """
+    normalized_query = str(query or "").strip().casefold()[
+        :MAX_SEARCH_QUERY_LENGTH
+    ]
 
     if not normalized_query or limit <= 0:
         return []
@@ -295,26 +1050,37 @@ def search_routes_and_stops(
     result_ids: set[str] = set()
 
     for route in routes:
-        searchable_route = " ".join((
-            route["routeNumber"],
-            route["name"],
-            route["direction"],
-        )).casefold()
+        route_number = str(route.get("routeNumber") or "").strip()
+        route_name = str(route.get("name") or route_number).strip()
+        direction = str(route.get("direction") or "outbound").strip()
+        origin = str(route.get("origin") or "").strip()
+        destination = str(route.get("destination") or "").strip()
+
+        searchable_route = " ".join(
+            part
+            for part in (
+                route_number,
+                route_name,
+                origin,
+                destination,
+                direction,
+            )
+            if part
+        ).casefold()
 
         if normalized_query not in searchable_route:
             continue
 
-        result_id = f'route:{route["routeNumber"]}'
-
+        result_id = f"route:{route_number}"
         if result_id in result_ids:
             continue
 
         results.append({
             "id": result_id,
             "type": "route",
-            "title": f'Route {route["routeNumber"]}',
-            "subtitle": route["name"],
-            "routeNumber": route["routeNumber"],
+            "title": f"Route {route_number}",
+            "subtitle": route_name,
+            "routeNumber": route_number,
         })
         result_ids.add(result_id)
 
@@ -322,26 +1088,33 @@ def search_routes_and_stops(
             return results
 
     for route in routes:
-        for stop in route["stops"]:
-            if normalized_query not in stop["name"].casefold():
+        route_number = str(route.get("routeNumber") or "").strip()
+        route_name = str(route.get("name") or route_number).strip()
+        raw_stops = route.get("stops") or []
+
+        for stop in raw_stops:
+            if not isinstance(stop, dict):
                 continue
 
-            result_id = (
-                f'stop:{route["routeNumber"]}:{stop["id"]}'
-            )
+            stop_name = str(stop.get("name") or "").strip()
+            stop_id = str(stop.get("id") or stop.get("_id") or "").strip()
 
+            if not stop_name or not stop_id:
+                continue
+            if normalized_query not in stop_name.casefold():
+                continue
+
+            result_id = f"stop:{route_number}:{stop_id}"
             if result_id in result_ids:
                 continue
 
             results.append({
                 "id": result_id,
                 "type": "stop",
-                "title": stop["name"],
-                "subtitle": (
-                    f'Route {route["routeNumber"]} · {route["name"]}'
-                ),
-                "routeNumber": route["routeNumber"],
-                "stopId": stop["id"],
+                "title": stop_name,
+                "subtitle": f"Route {route_number} · {route_name}",
+                "routeNumber": route_number,
+                "stopId": stop_id,
             })
             result_ids.add(result_id)
 
@@ -349,3 +1122,4 @@ def search_routes_and_stops(
                 return results
 
     return results
+

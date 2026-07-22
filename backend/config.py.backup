@@ -1,0 +1,74 @@
+import os
+from pathlib import Path
+
+import joblib
+from pymongo import MongoClient
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+TEXTLK_API_TOKEN = os.getenv("TEXTLK_API_TOKEN")
+TEXTLK_SENDER_ID = os.getenv("TEXTLK_SENDER_ID", "TextLKDemo")
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "driver-documents")
+
+# Map and routing configuration (values set per-environment in .env)
+MAP_STYLE_URL = os.getenv(
+    "MAP_STYLE_URL",
+    "https://demotiles.maplibre.org/style.json",
+)
+MAP_TILE_URL = os.getenv(
+    "MAP_TILE_URL",
+    "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+)
+MAP_ATTRIBUTION_TEXT = os.getenv(
+    "MAP_ATTRIBUTION_TEXT",
+    "\u00a9 OpenStreetMap contributors",
+)
+MAP_MIN_ZOOM = int(os.getenv("MAP_MIN_ZOOM", "5"))
+MAP_MAX_ZOOM = int(os.getenv("MAP_MAX_ZOOM", "18"))
+OSRM_BASE_URL = os.getenv(
+    "OSRM_BASE_URL",
+    "http://router.project-osrm.org",
+)
+
+client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+db = client["smart_bus_db"]
+
+# ── Existing collections (do not rename – other modules import these) ────────
+buses_collection = db["buses"]
+drivers_collection = db["drivers"]
+otp_collection = db["otp_requests"]
+trips_collection = db["trips"]
+driver_shifts_collection = db["driver_shifts"]
+notifications_collection = db["notifications"]
+routes_collection = db["routes"]
+issue_reports_collection = db["issue_reports"]
+driver_bus_requests_collection = db["driver_bus_requests"]
+
+# ── New collections added for OSM map tracking ──────────────────────────────
+# Separate stop documents with 2dsphere index for geospatial stop search.
+stops_collection = db["stops"]
+
+# Latest live position for each active bus (upsert on every GPS update).
+live_bus_states_collection = db["live_bus_states"]
+
+# Full GPS history for trip replay, model training, and audit.
+location_history_collection = db["location_history"]
+
+# ETA predictions stored for accuracy evaluation and model re-training.
+eta_predictions_collection = db["eta_predictions"]
+
+# ── ETA model (loaded once at startup) ──────────────────────────────────────
+ETA_MODEL_PATH = BASE_DIR / os.getenv("ETA_MODEL_PATH", "eta_model.pkl")
+eta_model_load_error = None
+
+try:
+    eta_model = joblib.load(ETA_MODEL_PATH)
+except Exception as error:
+    eta_model = None
+    eta_model_load_error = error

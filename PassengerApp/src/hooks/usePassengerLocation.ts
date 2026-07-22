@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, PermissionsAndroid, Platform } from 'react-native';
 import Geolocation from 'react-native-geolocation-service';
-import type { LatLng } from 'react-native-maps';
+import type { CoordinatePoint } from '../types';
 
 export type PassengerLocationStatus =
   | 'requesting'
@@ -12,7 +12,7 @@ export type PassengerLocationStatus =
   | 'error';
 
 interface PassengerLocationState {
-  location: LatLng | null;
+  location: CoordinatePoint | null;
   status: PassengerLocationStatus;
   message: string;
   retry: () => void;
@@ -37,7 +37,7 @@ function messageForStatus(status: PassengerLocationStatus): string {
 
 export function usePassengerLocation(): PassengerLocationState {
   const mountedRef = useRef(true);
-  const [location, setLocation] = useState<LatLng | null>(null);
+  const [location, setLocation] = useState<CoordinatePoint | null>(null);
   const [status, setStatus] = useState<PassengerLocationStatus>('requesting');
 
   useEffect(() => {

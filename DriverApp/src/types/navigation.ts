@@ -9,6 +9,9 @@ export type RootStackParamList = {
     purpose: 'register' | 'login';
   };
 
+  DriverAccessGate: undefined;
+  BusOnboarding: undefined;
+
   PendingApproval: {
     driver: DriverSession;
   };
@@ -19,6 +22,7 @@ export type RootStackParamList = {
 
   Trips: undefined;
   Profile: undefined;
-  RouteDetails: undefined;
   Notifications: undefined;
+  RouteDetails: undefined;
+  DriverRouteMap: undefined;
 };

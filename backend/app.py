@@ -14,6 +14,10 @@ from routes.document_routes import document_bp
 from routes.eta_routes import eta_bp
 from routes.route_routes import route_bp
 from routes.trip_routes import trip_bp
+from routes.driver_routes import driver_bp
+from routes.admin_bus_request_routes import admin_bus_request_bp
+from routes.map_routes import map_bp
+from routes.location_routes import location_bp
 
 
 def get_allowed_origins():
@@ -44,6 +48,8 @@ debug_mode = os.getenv(
 
 app.config["DEBUG"] = debug_mode
 
+from middleware.rate_limit import apply_rate_limits
+
 allowed_origins = get_allowed_origins()
 
 CORS(
@@ -54,6 +60,8 @@ CORS(
         }
     },
 )
+
+apply_rate_limits(app)
 
 socketio.init_app(
     app,
@@ -69,6 +77,10 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(admin_bp)
 app.register_blueprint(document_bp)
 app.register_blueprint(trip_bp)
+app.register_blueprint(driver_bp)
+app.register_blueprint(admin_bus_request_bp)
+app.register_blueprint(map_bp)
+app.register_blueprint(location_bp)
 
 
 @app.errorhandler(PyMongoError)
@@ -149,6 +161,55 @@ def handle_connect():
 @socketio.on("disconnect")
 def handle_disconnect():
     app.logger.info("Socket client disconnected")
+
+
+# ---------------------------------------------------------------------------
+# Room-scoped subscriptions (Phase 3)
+# ---------------------------------------------------------------------------
+
+from flask_socketio import join_room, leave_room  # noqa: E402
+
+
+@socketio.on("subscribe_route")
+def handle_subscribe_route(data):
+    """Passenger/web client subscribes to live updates for a route.
+
+    Payload: {"routeNumber": "138"}
+    """
+    route_number = (data or {}).get("routeNumber", "").strip()
+    if not route_number:
+        return
+    room = f"route:{route_number}"
+    join_room(room)
+    app.logger.debug("Client joined room %s", room)
+
+
+@socketio.on("unsubscribe_route")
+def handle_unsubscribe_route(data):
+    route_number = (data or {}).get("routeNumber", "").strip()
+    if not route_number:
+        return
+    leave_room(f"route:{route_number}")
+
+
+@socketio.on("subscribe_bus")
+def handle_subscribe_bus(data):
+    """Client subscribes to live updates for a specific bus.
+
+    Payload: {"busId": "NB-1234"}
+    """
+    bus_id = (data or {}).get("busId", "").strip()
+    if not bus_id:
+        return
+    join_room(f"bus:{bus_id}")
+
+
+@socketio.on("unsubscribe_bus")
+def handle_unsubscribe_bus(data):
+    bus_id = (data or {}).get("busId", "").strip()
+    if not bus_id:
+        return
+    leave_room(f"bus:{bus_id}")
 
 
 if __name__ == "__main__":

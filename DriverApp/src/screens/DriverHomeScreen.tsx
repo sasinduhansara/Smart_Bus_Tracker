@@ -113,12 +113,12 @@ export default function DriverHomeScreen() {
   const insets = useSafeAreaInsets();
   const onTabPress = useDriverTabs();
   const session = useAuthStore(state => state.session);
-  const logout = useAuthStore(state => state.logout);
   const updateVerificationStatus = useAuthStore(
     state => state.updateVerificationStatus,
   );
   const driverId = session?.driver.driver_id;
   const dashboard = useDriverDashboard(driverId);
+  const loadDashboard = dashboard.load;
 
   const trip = useTripStore(state => state.trip);
   const tripPhase = useTripStore(state => state.phase);
@@ -145,6 +145,7 @@ export default function DriverHomeScreen() {
   const [readinessChecking, setReadinessChecking] = useState(false);
   const [routeDeviationWarning, setRouteDeviationWarning] = useState(false);
   const restoreAttemptedRef = useRef(false);
+  const hasFocusedHomeRef = useRef(false);
   const approvalSyncInFlightRef = useRef(false);
   const readinessRequestInFlightRef = useRef(false);
   const pendingReadinessLocationRef =
@@ -333,6 +334,12 @@ export default function DriverHomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (hasFocusedHomeRef.current) {
+        loadDashboard().catch(() => undefined);
+      } else {
+        hasFocusedHomeRef.current = true;
+      }
+
       if (
         !trip &&
         tripPhase !== 'restoring' &&
@@ -366,6 +373,7 @@ export default function DriverHomeScreen() {
     }, [
       driverApproved,
       getGpsPreflightFailure,
+      loadDashboard,
       startGpsReadiness,
       stopGpsReadiness,
       trip,
@@ -584,17 +592,20 @@ export default function DriverHomeScreen() {
     }
 
     if (!confirmedRoute.terminals || confirmedRoute.terminals.length < 2) {
-      const presentation = presentTripStartError(
-        new ApiError(
-          'The assigned route does not have trip-start terminals configured.',
-          409,
-          'ROUTE_TERMINALS_NOT_CONFIGURED',
-        ),
-      );
-      setTripStartStatus(presentation.status);
-      setTripStartError(presentation);
-      Alert.alert(presentation.title, presentation.message);
-      return;
+      const originName = confirmedRoute.origin || 'Start Terminal';
+      const destName = confirmedRoute.destination || 'End Terminal';
+      const firstStop = confirmedRoute.stops?.[0];
+      const lastStop = confirmedRoute.stops?.[confirmedRoute.stops.length - 1];
+
+      const startLat = firstStop?.latitude ?? (firstStop as any)?.lat ?? 6.9271;
+      const startLng = firstStop?.longitude ?? (firstStop as any)?.lng ?? 79.8612;
+      const endLat = lastStop?.latitude ?? (lastStop as any)?.lat ?? 6.7106;
+      const endLng = lastStop?.longitude ?? (lastStop as any)?.lng ?? 79.9074;
+
+      confirmedRoute.terminals = [
+        { id: 'start-terminal', name: originName, latitude: startLat, longitude: startLng, startRadiusMeters: 500 },
+        { id: 'end-terminal', name: destName, latitude: endLat, longitude: endLng, startRadiusMeters: 500 },
+      ];
     }
 
     try {
@@ -829,29 +840,6 @@ export default function DriverHomeScreen() {
     );
   }, [endTrip]);
 
-  const handleLogout = useCallback(async () => {
-    if (trip) {
-      Alert.alert(
-        'Trip still open',
-        'End the active or paused trip before signing out so passengers receive the correct status.',
-      );
-      return;
-    }
-
-    gps.stopTracking();
-    await clearTripLocationQueue();
-    await logout();
-    navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
-  }, [gps, logout, navigation, trip]);
-
-  const showDriverMenu = useCallback(() => {
-    Alert.alert('Driver menu', 'Choose an account action.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Profile', onPress: () => navigation.navigate('Profile') },
-      { text: 'Sign out', style: 'destructive', onPress: () => handleLogout().catch(() => undefined) },
-    ]);
-  }, [handleLogout, navigation]);
-
   const openIssue = useCallback((category?: IssueCategory) => {
     setIssueCategory(category);
     setIssueVisible(true);
@@ -890,12 +878,19 @@ export default function DriverHomeScreen() {
   const quickActions = useMemo<QuickActionItem[]>(
     () => [
       {
+        key: 'live-map',
+        label: 'Live map',
+        icon: 'navigate-outline',
+        onPress: () => navigation.navigate('DriverRouteMap'),
+        disabled: !vehicle?.route,
+        tone: 'primary',
+      },
+      {
         key: 'route',
         label: 'Route details',
         icon: 'map-outline',
         onPress: () => navigation.navigate('RouteDetails'),
         disabled: !vehicle?.route,
-        tone: 'primary',
       },
       {
         key: 'history',
@@ -1003,7 +998,6 @@ export default function DriverHomeScreen() {
       <DriverHeader
         driverName={driver?.fullName}
         notificationCount={dashboard.home?.stats.notifications}
-        onMenuPress={showDriverMenu}
         onNotificationsPress={() => navigation.navigate('Notifications')}
         statusLabel={headerStatus.label}
         statusTone={headerStatus.tone}

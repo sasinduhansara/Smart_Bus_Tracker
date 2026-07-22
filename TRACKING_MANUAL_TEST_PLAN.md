@@ -60,6 +60,42 @@ response code and a screenshot for every rejected or interrupted state.
     Pending Approval. Confirm a duplicate NTC or licence is rejected safely, then
     assign route and vehicle later through the authorised operations workflow.
 
+## Driver bus onboarding and route assignment
+
+Prepare active SLTB, Private, and Intercity routes for at least two depots. Each
+route's depot name must match its depot master record.
+
+1. Sign in as an approved driver without a verified bus. Confirm the app opens
+   Register Your Bus through the access gate and shows Service Type and depot,
+   with no editable Operator field.
+2. Select each Service Type. Confirm Depot lists only depots with an active route
+   for that service type, and changing Service Type clears Depot and Route.
+3. Select a Depot. Confirm Route lists only active routes for that depot and
+   service type. Changing Depot must clear the previous Route.
+4. Submit the bus request and confirm Service Type, Depot, and Route appear in
+   both the driver request summary and the admin review modal. Confirm no fixed
+   route time is requested or stored during bus registration.
+5. Tamper with the API payload using a route from another depot or another
+   service type. Confirm the backend rejects every mismatch and does not create
+   or revise the request.
+6. Approve the request in Admin. Confirm the bus and driver records receive the
+   selected route and service type, and the driver can reopen the app through
+   DriverAccessGate without a missing-route error. Assign changing departure
+   times separately through the Admin scheduling and daily-service workflow.
+7. Open a pending request in Admin and select Edit request. Change vehicle,
+   service type, depot, route, or optional vehicle details. Confirm dependent
+   depot/route selections reset, invalid combinations are rejected, the request
+   revision increments, and the refreshed list shows the updated values.
+8. Edit a correction-required or rejected request. Confirm it returns to Under
+   review, previous correction/rejection messages clear, and it can continue to
+   approval. Edit an approved request and confirm its linked bus and driver route
+   assignment are updated together.
+9. Delete a pending, under-review, correction-required, or rejected request.
+   Confirm the custom warning modal requires confirmation, the record disappears,
+   and the driver returns to bus registration on the next access-gate check.
+10. Delete an approved request and confirm only the request/audit record is
+    removed while its already-approved bus and driver assignment remain active.
+
 ## Live tracking physical-device scenarios
 
 Use an approved test driver with a real bus and route assignment. Use a second
@@ -96,6 +132,21 @@ result.
     and exactly one watcher is restored.
 12. Complete the trip. Confirm all watchers stop, the queue clears after successful
     completion, and Passenger status changes immediately to Offline.
+
+## Driver notifications
+
+1. Open Driver Home and confirm the previous hamburger menu button is absent while
+   the notification bell remains available.
+2. Submit a driver issue and confirm Admin's To resolve tab includes both open
+   and in-review reports. Resolve it with a required resolution note, confirm it
+   moves to Resolved, and verify the Driver App receives the note in an Issue
+   resolved notification. Confirm the All tab includes both groups.
+3. Create several unread notifications, select Mark all as read, then close and
+   reopen the Driver App. Confirm their read state remains saved in the backend.
+4. Leave a notification unread, force-close and reopen the app, and confirm the
+   notification and unread state remain available after sign-in.
+5. Create 21 notifications for the same driver. Confirm the API returns only the
+   newest 20 and the oldest record is removed from the notifications collection.
 
 ## Native background capability still required
 

@@ -1,0 +1,431 @@
+"""
+map_routes.py
+
+Endpoints for the OSM tracking map functionality across all three apps.
+
+Admin: Geometry editing and live monitoring.
+Passenger: Stop/route search, ETA, and live bus locations.
+Driver: Active route geometry and map state.
+"""
+
+from datetime import datetime, timezone
+from typing import Any
+
+from flask import Blueprint, jsonify, request
+from bson.objectid import ObjectId
+from pymongo.errors import PyMongoError
+
+from config import (
+    live_bus_states_collection,
+    stops_collection,
+    routes_collection,
+)
+from utils.auth_utils import jwt_required, roles_required, get_jwt_identity, get_jwt_claims
+from services.route_service import (
+    get_route_details,
+    update_route_record,
+    has_valid_geometry,
+    RouteValidationError,
+)
+from services.osrm_service import (
+    generate_route_geometry,
+    validate_stops_on_route,
+    OsrmUnavailable,
+    OsrmGeometryError,
+)
+from services.route_geometry_service import (
+    save_route_geometry,
+    validate_route_geometry,
+    get_route_geojson,
+)
+# We will need driver/trip logic later in Phase 2 for driver routes
+# We will need ETA logic later in Phase 5 for passenger ETA
+
+map_bp = Blueprint("map_bp", __name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# Admin Endpoints (JWT + admin role required)
+# ---------------------------------------------------------------------------
+
+@map_bp.route("/api/admin/routes/<route_id>/map", methods=["GET"])
+@jwt_required
+@roles_required("admin")
+def admin_get_route_map(route_id: str):
+    """Return the route details including GeoJSON geometry for the map editor."""
+    if not ObjectId.is_valid(route_id):
+        return jsonify({"error": "Invalid route ID"}), 400
+
+    # For admin editor, we just use the route service which includes geometry
+    try:
+        route = routes_collection.find_one({"_id": ObjectId(route_id)})
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+    if not route:
+        return jsonify({"error": "Route not found"}), 404
+
+    # The route document has stops and geometry already
+    return jsonify({
+        "status": "success",
+        "route": {
+            "id": str(route.get("_id")),
+            "routeNumber": route.get("routeNumber"),
+            "name": route.get("name"),
+            "geometry": route.get("geometry"),
+            "geometryVersion": route.get("geometryVersion"),
+            "stops": route.get("stops", []),
+        }
+    })
+
+
+@map_bp.route("/api/admin/routes/<route_id>/stops", methods=["PATCH"])
+@jwt_required
+@roles_required("admin")
+def admin_update_route_stops(route_id: str):
+    """Update stop coordinates directly without regenerating geometry."""
+    if not ObjectId.is_valid(route_id):
+        return jsonify({"error": "Invalid route ID"}), 400
+
+    data = request.get_json()
+    if not data or "stops" not in data:
+        return jsonify({"error": "Payload must include 'stops'"}), 400
+
+    try:
+        # In a full implementation, we'd validate the stops against the schema.
+        # For now, we update the existing route record using route_service.
+        # We need the full payload for update_route_record, so we fetch it first.
+        route = routes_collection.find_one({"_id": ObjectId(route_id)})
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+        
+        # We only want to update the stops array in the payload
+        payload = dict(route)
+        payload["id"] = str(payload.pop("_id"))
+        payload["stops"] = data["stops"]
+        
+        admin_id = get_jwt_identity()
+        updated_route = update_route_record(route_id, payload, admin_id)
+        
+        return jsonify({
+            "status": "success",
+            "route": updated_route,
+        })
+    except RouteValidationError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@map_bp.route("/api/admin/routes/<route_id>/generate-geometry", methods=["POST"])
+@jwt_required
+@roles_required("admin")
+def admin_generate_route_geometry(route_id: str):
+    """Call OSRM to generate a route geometry preview from current stop coords."""
+    if not ObjectId.is_valid(route_id):
+        return jsonify({"error": "Invalid route ID"}), 400
+        
+    try:
+        route = routes_collection.find_one({"_id": ObjectId(route_id)})
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+            
+        stops = route.get("stops", [])
+        if len(stops) < 2:
+            return jsonify({"error": "Route must have at least 2 stops"}), 400
+            
+        ordered_coords = []
+        for stop in stops:
+            # Check for legacy or GeoJSON coordinates
+            loc = stop.get("location", {})
+            coords = loc.get("coordinates")
+            if coords and len(coords) == 2:
+                ordered_coords.append((float(coords[0]), float(coords[1])))
+            elif "longitude" in stop and "latitude" in stop:
+                ordered_coords.append((float(stop["longitude"]), float(stop["latitude"])))
+            else:
+                return jsonify({"error": f"Stop {stop.get('name')} missing coordinates"}), 400
+                
+        # Call OSRM
+        result = generate_route_geometry(ordered_coords)
+        
+        return jsonify({
+            "status": "success",
+            "geometry": result["geometry"],
+            "totalDistanceMeters": result["totalDistanceMeters"],
+        })
+        
+    except (OsrmUnavailable, OsrmGeometryError) as e:
+        return jsonify({"error": str(e)}), 503
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@map_bp.route("/api/admin/routes/<route_id>/geometry", methods=["PATCH"])
+@jwt_required
+@roles_required("admin")
+def admin_save_route_geometry(route_id: str):
+    """Save the approved route geometry and update the stops collection."""
+    if not ObjectId.is_valid(route_id):
+        return jsonify({"error": "Invalid route ID"}), 400
+        
+    data = request.get_json()
+    if not data or "geometry" not in data or "totalDistanceMeters" not in data:
+        return jsonify({"error": "Payload must include geometry and totalDistanceMeters"}), 400
+        
+    try:
+        route = routes_collection.find_one({"_id": ObjectId(route_id)})
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+            
+        stops = route.get("stops", [])
+        admin_id = get_jwt_identity()
+        
+        # Save geometry and sync stops collection
+        result = save_route_geometry(
+            route_id, 
+            data["geometry"], 
+            stops, 
+            float(data["totalDistanceMeters"]), 
+            actor_id=admin_id
+        )
+        
+        return jsonify({
+            "status": "success",
+            "route": result,
+        })
+        
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@map_bp.route("/api/admin/routes/<route_id>/validate-geometry", methods=["POST"])
+@jwt_required
+@roles_required("admin")
+def admin_validate_route_geometry(route_id: str):
+    """Validate that the route's stops are within the corridor of its geometry."""
+    result = validate_route_geometry(route_id)
+    return jsonify({
+        "status": "success",
+        "validation": result,
+    })
+
+
+@map_bp.route("/api/admin/live-map", methods=["GET"])
+@jwt_required
+@roles_required("admin")
+def admin_live_map_status():
+    """Admin dashboard stats for the live map."""
+    try:
+        active_count = live_bus_states_collection.count_documents({"operationalStatus": "active"})
+        total_count = live_bus_states_collection.count_documents({})
+        
+        return jsonify({
+            "status": "success",
+            "activeBuses": active_count,
+            "totalTrackedBuses": total_count,
+        })
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+
+@map_bp.route("/api/admin/live-map/buses", methods=["GET"])
+@jwt_required
+@roles_required("admin")
+def admin_live_map_buses():
+    """Return all live buses for the admin monitoring map."""
+    try:
+        buses = list(live_bus_states_collection.find({}, {"_id": 0}))
+        # Convert dates to ISO strings for JSON serialization
+        for bus in buses:
+            for field in ["recordedAt", "updatedAt", "statusUpdatedAt"]:
+                if field in bus and isinstance(bus[field], datetime):
+                    bus[field] = bus[field].isoformat()
+                    
+        return jsonify({
+            "status": "success",
+            "buses": buses,
+        })
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+
+# ---------------------------------------------------------------------------
+# Passenger Endpoints (Public)
+# ---------------------------------------------------------------------------
+# Stubs to be fully implemented in Phase 4 / Phase 5.
+# ---------------------------------------------------------------------------
+
+@map_bp.route("/api/passenger/stops/search", methods=["GET"])
+def passenger_search_stops():
+    query = request.args.get("q", "").strip()
+    if not query:
+        return jsonify({"status": "success", "stops": []})
+        
+    try:
+        # Simple regex search on stop name, limit to 10
+        stops = list(stops_collection.find(
+            {"name": {"$regex": query, "$options": "i"}},
+            {"_id": 0, "location": 1, "name": 1, "stopId": 1, "routeId": 1}
+        ).limit(10))
+        return jsonify({"status": "success", "stops": stops})
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+
+@map_bp.route("/api/passenger/routes/search", methods=["GET"])
+def passenger_search_routes():
+    # Will be implemented in Phase 4
+    return jsonify({"status": "success", "routes": []})
+
+
+@map_bp.route("/api/passenger/services/search", methods=["GET"])
+def passenger_search_services():
+    # Will be implemented in Phase 4
+    return jsonify({"status": "success", "services": []})
+
+
+@map_bp.route("/api/passenger/routes/<route_id>", methods=["GET"])
+def passenger_get_route(route_id: str):
+    # Public route lookup
+    if not ObjectId.is_valid(route_id):
+        # Maybe it's a route number?
+        route = routes_collection.find_one({"routeNumber": route_id})
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+        route_id = str(route["_id"])
+        
+    try:
+        route = routes_collection.find_one({"_id": ObjectId(route_id)})
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+            
+        return jsonify({
+            "status": "success",
+            "route": {
+                "id": str(route["_id"]),
+                "routeNumber": route.get("routeNumber"),
+                "name": route.get("name"),
+                "geometry": route.get("geometry"),
+                "stops": route.get("stops", []),
+            }
+        })
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+
+@map_bp.route("/api/passenger/routes/<route_id>/live-buses", methods=["GET"])
+def passenger_route_buses(route_id: str):
+    try:
+        buses = list(live_bus_states_collection.find({"routeId": route_id}, {"_id": 0}))
+        for bus in buses:
+            for field in ["recordedAt", "updatedAt", "statusUpdatedAt"]:
+                if field in bus and isinstance(bus[field], datetime):
+                    bus[field] = bus[field].isoformat()
+        return jsonify({"status": "success", "buses": buses})
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+
+@map_bp.route("/api/passenger/map/bootstrap", methods=["GET"])
+def passenger_map_bootstrap():
+    """Return route GeoJSON, stops, and current live bus states in one round-trip."""
+    route_id = request.args.get("routeId")
+    if not route_id:
+        return jsonify({"error": "routeId required"}), 400
+        
+    # Will be fully implemented in Phase 4
+    return passenger_get_route(route_id)
+
+
+# ---------------------------------------------------------------------------
+# Driver Endpoints (JWT + driver role required)
+# ---------------------------------------------------------------------------
+# Stubs to be fully implemented in Phase 2.
+# ---------------------------------------------------------------------------
+
+from config import drivers_collection, trips_collection
+from utils.auth_utils import get_jwt_identity
+
+@map_bp.route("/api/driver/me/duty", methods=["GET"])
+@jwt_required
+@roles_required("driver")
+def driver_my_duty():
+    driver_id = get_jwt_identity()
+    try:
+        driver = drivers_collection.find_one({"_id": ObjectId(driver_id)})
+        if not driver:
+            return jsonify({"error": "Driver not found"}), 404
+            
+        return jsonify({
+            "status": "success",
+            "duty": {
+                "busId": driver.get("vehicleRegistrationNumber"),
+                "routeNumber": driver.get("busRouteNumber"),
+            }
+        })
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+
+@map_bp.route("/api/driver/me/route", methods=["GET"])
+@jwt_required
+@roles_required("driver")
+def driver_my_route():
+    driver_id = get_jwt_identity()
+    try:
+        driver = drivers_collection.find_one({"_id": ObjectId(driver_id)})
+        if not driver:
+            return jsonify({"error": "Driver not found"}), 404
+            
+        route_number = driver.get("busRouteNumber")
+        if not route_number:
+            return jsonify({"error": "No route assigned"}), 404
+            
+        route = routes_collection.find_one({"routeNumber": route_number})
+        if not route:
+            return jsonify({"error": "Route not found"}), 404
+            
+        return jsonify({
+            "status": "success",
+            "route": {
+                "id": str(route["_id"]),
+                "routeNumber": route.get("routeNumber"),
+                "name": route.get("name"),
+                "geometry": route.get("geometry"),
+                "geometryVersion": route.get("geometryVersion"),
+                "stops": route.get("stops", []),
+            }
+        })
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500
+
+
+@map_bp.route("/api/driver/trips/<trip_id>/map-state", methods=["GET"])
+@jwt_required
+@roles_required("driver")
+def driver_trip_map_state(trip_id: str):
+    driver_id = get_jwt_identity()
+    if not ObjectId.is_valid(trip_id):
+        return jsonify({"error": "Invalid trip ID"}), 400
+        
+    try:
+        trip = trips_collection.find_one({"_id": ObjectId(trip_id), "driverId": driver_id})
+        if not trip:
+            return jsonify({"error": "Trip not found"}), 404
+            
+        return jsonify({
+            "status": "success",
+            "mapState": {
+                "currentStopSequence": trip.get("currentStopSequence", 1),
+                "isRouteDeviation": trip.get("isRouteDeviation", False),
+            }
+        })
+    except PyMongoError:
+        return jsonify({"error": "Database error"}), 500

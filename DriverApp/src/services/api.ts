@@ -275,7 +275,11 @@ async function requestForm<T>(
         throw new ApiError('Document upload cancelled.', 0, 'CANCELLED');
       }
 
-      throw new ApiError('Document upload timed out. Please retry.', 0, 'TIMEOUT');
+      throw new ApiError(
+        'Document upload timed out. Please retry.',
+        0,
+        'TIMEOUT',
+      );
     }
 
     throw new ApiError(
@@ -298,6 +302,13 @@ function post<T>(url: string, body: unknown): Promise<T> {
 
 function get<T>(url: string): Promise<T> {
   return request<T>(url);
+}
+
+function patch<T>(url: string, body: unknown = {}): Promise<T> {
+  return request<T>(url, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  });
 }
 
 export function requestRegisterOTP(
@@ -379,13 +390,31 @@ export function getDriverHome(driverId: string): Promise<DriverHomeResponse> {
 }
 
 export function getDriverNotifications(
-  limit = 50,
+  limit = 20,
 ): Promise<DriverNotificationsResponse> {
-  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 100);
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 1), 20);
 
   return get<DriverNotificationsResponse>(
     `/api/driver/notifications?limit=${safeLimit}`,
   );
+}
+
+export function markDriverNotificationRead(
+  notificationId: string,
+): Promise<{
+  status: string;
+  notification: DriverNotificationsResponse['notifications'][number];
+}> {
+  return patch(
+    `/api/driver/notifications/${encodeURIComponent(notificationId)}/read`,
+  );
+}
+
+export function markAllDriverNotificationsRead(): Promise<{
+  status: string;
+  updatedCount: number;
+}> {
+  return patch('/api/driver/notifications/read-all');
 }
 
 export function getDriverStatus(
@@ -432,7 +461,23 @@ export function sendDriverLocation(
 }
 
 export function getActiveTrip(): Promise<ActiveTripResponse> {
-  return get<ActiveTripResponse>('/api/driver/trips/active');
+  return request<ActiveTripResponse>('/api/driver/trips/active');
+}
+
+export async function fetchTripHistory(): Promise<TripHistoryResponse> {
+  return request<TripHistoryResponse>('/api/driver/trips/history');
+}
+
+export async function getDriverDuty(): Promise<{ status: string; duty: any }> {
+  return request('/api/driver/me/duty');
+}
+
+export async function getDriverRouteMap(): Promise<{ status: string; route: any }> {
+  return request('/api/driver/me/route');
+}
+
+export async function getDriverTripMapState(tripId: string): Promise<{ status: string; mapState: any }> {
+  return request(`/api/driver/trips/${tripId}/map-state`);
 }
 
 export function getTripHistory(limit = 30): Promise<TripHistoryResponse> {
@@ -522,4 +567,189 @@ export function reportDriverIssue(data: {
   location?: TripLocation;
 }): Promise<DriverIssueResponse> {
   return post<DriverIssueResponse>('/api/driver/issues', data);
+}
+export type DriverOnboardingNextStep =
+  | 'ACCOUNT_BLOCKED'
+  | 'DRIVER_REJECTED'
+  | 'DRIVER_CORRECTION_REQUIRED'
+  | 'DRIVER_VERIFICATION_PENDING'
+  | 'BUS_REGISTRATION_REQUIRED'
+  | 'BUS_REQUEST_PENDING'
+  | 'BUS_CORRECTION_REQUIRED'
+  | 'BUS_REQUEST_REJECTED'
+  | 'READY_FOR_HOME';
+
+export type DriverBusRequestStatus =
+  | 'pending'
+  | 'under_review'
+  | 'correction_required'
+  | 'approved'
+  | 'rejected';
+
+export type DriverBusRequestType =
+  | 'existing_bus_claim'
+  | 'new_bus_registration';
+
+export type DriverBusServiceType = 'sltb' | 'private' | 'intercity';
+
+export interface DriverVerifiedBus {
+  id: string;
+  vehicleRegistrationNumber: string;
+  ntcPermitNumber: string;
+  operatorId: string;
+  operatorName: string;
+  depotId: string;
+  depotName: string;
+  serviceType: DriverBusServiceType;
+  routeId: string;
+  routeNumber: string;
+  routeName: string;
+  make: string;
+  model: string;
+  manufactureYear?: number | null;
+  seatingCapacity?: number | null;
+  recordStatus: string;
+  operationalStatus: string;
+}
+
+export interface DriverBusRequestRecord {
+  id: string;
+  driverId: string;
+  driverName: string;
+  driverMobile: string;
+  driverNtcRegistrationNumber: string;
+
+  requestType: DriverBusRequestType;
+  existingBusId: string;
+  approvedBusId: string;
+
+  vehicleRegistrationNumber: string;
+  ntcPermitNumber: string;
+
+  operatorId: string;
+  operatorName: string;
+
+  depotId: string;
+  depotName: string;
+
+  serviceType: DriverBusServiceType;
+  routeId: string;
+  routeNumber: string;
+  routeName: string;
+
+  make: string;
+  model: string;
+
+  manufactureYear?: number | null;
+  seatingCapacity?: number | null;
+
+  notes: string;
+
+  status: DriverBusRequestStatus;
+  requestRevision: number;
+
+  correctionFields: string[];
+  correctionMessage: string;
+  rejectionReason: string;
+
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt: string;
+  approvedAt: string;
+  correctionRequestedAt: string;
+  rejectedAt: string;
+}
+
+export interface DriverOnboardingStatusResponse {
+  status: string;
+  driverId: string;
+  driverVerificationStatus: string;
+  kycStatus: string;
+  busVerificationStatus: string;
+  nextStep: DriverOnboardingNextStep;
+  verifiedBus: DriverVerifiedBus | null;
+  busRequest: DriverBusRequestRecord | null;
+}
+
+export interface BusOnboardingOperator {
+  id: string;
+  name: string;
+  code: string;
+}
+
+export interface BusOnboardingDepot {
+  id: string;
+  operatorId: string;
+  name: string;
+  code: string;
+  district: string;
+}
+
+export interface BusOnboardingRoute {
+  id: string;
+  routeNumber: string;
+  name: string;
+  origin: string;
+  destination: string;
+  depotName: string;
+  serviceCategories: DriverBusServiceType[];
+}
+
+export interface BusOnboardingReferencesResponse {
+  status: string;
+  operators: BusOnboardingOperator[];
+  depots: BusOnboardingDepot[];
+  serviceTypes: DriverBusServiceType[];
+  routes: BusOnboardingRoute[];
+}
+
+export interface SubmitDriverBusRequestPayload {
+  vehicleRegistrationNumber: string;
+  ntcPermitNumber?: string;
+  depotId: string;
+  serviceType: DriverBusServiceType;
+  routeId: string;
+  make?: string;
+  model?: string;
+  manufactureYear?: number;
+  seatingCapacity?: number;
+  notes?: string;
+}
+
+export interface SubmitDriverBusRequestResponse {
+  status: string;
+  requestType: DriverBusRequestType;
+  busRequestStatus: DriverBusRequestStatus;
+  busRequest: DriverBusRequestRecord;
+}
+
+export function getDriverOnboardingStatus(): Promise<DriverOnboardingStatusResponse> {
+  return get<DriverOnboardingStatusResponse>(
+    '/api/driver/me/onboarding-status',
+  );
+}
+
+export function getDriverBusOnboardingReferences(): Promise<BusOnboardingReferencesResponse> {
+  return get<BusOnboardingReferencesResponse>(
+    '/api/driver/bus-onboarding/references',
+  );
+}
+
+export function getMyDriverBusRequest(): Promise<{
+  status: string;
+  busRequest: DriverBusRequestRecord | null;
+}> {
+  return get<{
+    status: string;
+    busRequest: DriverBusRequestRecord | null;
+  }>('/api/driver/me/bus-request');
+}
+
+export function submitDriverBusRequest(
+  data: SubmitDriverBusRequestPayload,
+): Promise<SubmitDriverBusRequestResponse> {
+  return post<SubmitDriverBusRequestResponse>(
+    '/api/driver/me/bus-request',
+    data,
+  );
 }

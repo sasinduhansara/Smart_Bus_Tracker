@@ -1,6 +1,7 @@
 import {
   getDriverNavigationKey,
   getInitialDriverRoute,
+  isDriverEntryRoute,
 } from '../src/navigation/authRouting';
 import type { AuthSession, VerificationStatus } from '../src/types';
 
@@ -24,26 +25,25 @@ describe('driver authentication routing', () => {
     expect(getDriverNavigationKey(null)).toBe('signed-out');
   });
 
-  test.each(['approved', 'verified'] as const)(
-    'routes a %s driver to the operational dashboard',
-    status => {
-      const session = sessionWithStatus(status);
-
-      expect(getInitialDriverRoute(session)).toBe('DriverHome');
-      expect(getDriverNavigationKey(session)).toBe('approved-driver');
-    },
-  );
-
   test.each([
+    'approved',
+    'verified',
     'pending',
     'under_review',
     'rejected',
     'blocked',
     'unverified',
-  ] as const)('keeps a %s driver on the review screen', status => {
+  ] as const)('routes a restored %s session through the access gate', status => {
     const session = sessionWithStatus(status);
 
-    expect(getInitialDriverRoute(session)).toBe('PendingApproval');
-    expect(getDriverNavigationKey(session)).toBe('driver-review');
+    expect(getInitialDriverRoute(session)).toBe('DriverAccessGate');
+    expect(getDriverNavigationKey(session)).toBe('signed-in-driver');
+  });
+
+  test('recognizes only Login and DriverAccessGate as entry routes', () => {
+    expect(isDriverEntryRoute('Login')).toBe(true);
+    expect(isDriverEntryRoute('DriverAccessGate')).toBe(true);
+    expect(isDriverEntryRoute('DriverHome')).toBe(false);
+    expect(isDriverEntryRoute('PendingApproval')).toBe(false);
   });
 });

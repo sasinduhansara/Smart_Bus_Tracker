@@ -21,7 +21,16 @@ function getUpdateTimestamp(update: BusLocationUpdate): number | null {
 export function hasBusCoordinates(
   update: BusLocationUpdate,
 ): update is BusLocation {
-  return typeof update.lat === 'number' && typeof update.lng === 'number';
+  return (
+    typeof update.lat === 'number' &&
+    Number.isFinite(update.lat) &&
+    update.lat >= -90 &&
+    update.lat <= 90 &&
+    typeof update.lng === 'number' &&
+    Number.isFinite(update.lng) &&
+    update.lng >= -180 &&
+    update.lng <= 180
+  );
 }
 
 export function mergeBusLocationUpdate(
